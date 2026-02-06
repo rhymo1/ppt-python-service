@@ -19,13 +19,14 @@ app = Flask(__name__)
 def home():
     return jsonify({
         "status": "Python PPT Service is running",
-        "version": "2.5",
+        "version": "2.6",
         "endpoints": [
             "/health",
             "/extract",
+            "/calculate",
+            "/calculate-financial",
             "/generate",
-            "/generate-charts",
-            "/debug"
+            "/generate-charts"
         ]
     })
 
@@ -35,25 +36,6 @@ def health():
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat()
-    })
-
-# DEBUG ROUTE - See what's being received
-@app.route('/debug', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
-def debug_request():
-    return jsonify({
-        "method": request.method,
-        "path": request.path,
-        "url": request.url,
-        "content_type": request.content_type,
-        "headers": dict(request.headers),
-        "args": dict(request.args),
-        "form": dict(request.form),
-        "files": {key: {
-            "filename": file.filename,
-            "content_type": file.content_type,
-            "size": len(file.read())
-        } for key, file in request.files.items()} if request.files else {},
-        "data_length": len(request.data) if request.data else 0
     })
 
 # Helper: Extract text from PDF
@@ -141,24 +123,10 @@ def parse_building_data(text):
     
     return data
 
-# Extract data from files - ACCEPTS ALL HTTP METHODS FOR DEBUGGING
-@app.route('/extract', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'])
+# Extract data from files
+@app.route('/extract', methods=['POST'])
 def extract_data():
     try:
-        # Log what we received
-        print(f"=== EXTRACT ENDPOINT HIT ===")
-        print(f"Method: {request.method}")
-        print(f"Content-Type: {request.content_type}")
-        print(f"Files count: {len(request.files) if request.files else 0}")
-        print(f"Data length: {len(request.data) if request.data else 0}")
-        print(f"Headers: {dict(request.headers)}")
-        
-        if request.method != 'POST':
-            return jsonify({
-                "error": f"Method {request.method} not allowed",
-                "hint": "Use POST method"
-            }), 405
-        
         extracted_data = {}
         processing_log = []
         files_processed = {
@@ -228,8 +196,7 @@ def extract_data():
                     "content_type": request.content_type,
                     "files_count": len(request.files) if request.files else 0,
                     "form_keys": list(request.form.keys()) if request.form else [],
-                    "data_length": len(request.data) if request.data else 0,
-                    "headers": dict(request.headers)
+                    "data_length": len(request.data) if request.data else 0
                 }
             }), 400
         
@@ -251,8 +218,184 @@ def extract_data():
     
     except Exception as e:
         import traceback
-        print(f"ERROR in /extract: {str(e)}")
-        print(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+# Calculate energy losses
+@app.route('/calculate', methods=['POST'])
+def calculate_energy():
+    try:
+        data = request.json
+        
+        if not data:
+            return jsonify({"error": "No JSON data provided"}), 400
+        
+        components = data.get("components", {})
+        building_info = data.get("building_info", {})
+        
+        # Constants
+        HEATING_DEGREE_DAYS = 3500
+        TARGET_U_VALUES = {
+            "aussenwand": 0.20,
+            "dach": 0.14,
+            "fenster": 0.95,
+            "keller": 0.25
+        }
+        
+        # Calculate energy losses
+        results = {}
+        
+        for comp_type, comp_data in components.items():
+            u_value_ist = comp_data["u_value_ist"]
+            area = comp_data["total_area"]
+            u_value_loesung = TARGET_U_VALUES.get(comp_type, u_value_ist * 0.3)
+            
+            loss_ist = u_value_ist * area * HEATING_DEGREE_DAYS * 0.024
+            loss_loesung = u_value_loesung * area * HEATING_DEGREE_DAYS * 0.024
+            
+            results[comp_type] = {
+                "u_value_ist": u_value_ist,
+                "u_value_loesung": u_value_loesung,
+                "area": area,
+                "loss_kwh_ist": round(loss_ist, 0),
+                "loss_kwh_loesung": round(loss_loesung, 0),
+                "savings_kwh": round(loss_ist - loss_loesung, 0)
+            }
+        
+        # Calculate totals
+        total_loss_ist = sum(r["loss_kwh_ist"] for r in results.values())
+        total_loss_loesung = sum(r["loss_kwh_loesung"] for r in results.values())
+        
+        # Add percentages
+        for comp_type in results:
+            results[comp_type]["loss_pct"] = round(
+                (results[comp_type]["loss_kwh_ist"] / total_loss_ist * 100) if total_loss_ist > 0 else 0,
+                1
+            )
+        
+        # Add heating losses
+        results["heizung"] = {
+            "loss_kwh_ist": round(total_loss_ist * 0.15, 0),
+            "loss_kwh_loesung": round(total_loss_ist * 0.03, 0),
+            "loss_pct": 15.0
+        }
+        
+        # Add ventilation losses
+        results["lueftung"] = {
+            "loss_kwh_ist": round(total_loss_ist * 0.20, 0),
+            "loss_kwh_loesung": round(total_loss_ist * 0.05, 0),
+            "loss_pct": 20.0
+        }
+        
+        # Identify weak points
+        building_components_only = {
+            k: v["loss_kwh_ist"] 
+            for k, v in results.items() 
+            if k in ["aussenwand", "dach", "fenster", "keller"] and "loss_kwh_ist" in v
+        }
+        
+        sorted_components = sorted(
+            building_components_only.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        WEAK_POINT_NAMES = {
+            "aussenwand": "Außenwände",
+            "dach": "Dach",
+            "fenster": "Fenster",
+            "keller": "Kellerdecke"
+        }
+        
+        weak_points = {
+            "schwachstelle_1": f"{WEAK_POINT_NAMES.get(sorted_components[0][0], sorted_components[0][0])} - höchster Energieverlust ({int(sorted_components[0][1])} kWh/a)" if len(sorted_components) > 0 else "",
+            "schwachstelle_2": f"{WEAK_POINT_NAMES.get(sorted_components[1][0], sorted_components[1][0])} - zweithöchster Energieverlust ({int(sorted_components[1][1])} kWh/a)" if len(sorted_components) > 1 else ""
+        }
+        
+        # Return complete data
+        output = data.copy()
+        output["energy_calculations"] = results
+        output["weak_points"] = weak_points
+        output["total_loss_ist"] = total_loss_ist
+        output["total_loss_loesung"] = total_loss_loesung
+        
+        return jsonify(output)
+    
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+# Calculate financial data
+@app.route('/calculate-financial', methods=['POST'])
+def calculate_financial():
+    try:
+        data = request.json
+        
+        if not data:
+            return jsonify({"error": "No JSON data provided"}), 400
+        
+        energy_calc = data.get("energy_calculations", {})
+        
+        # Cost estimates
+        COST_PER_SQM = {
+            "aussenwand": {"investment": 180, "maintenance_pct": 0.85},
+            "dach": {"investment": 350, "maintenance_pct": 0.90},
+            "fenster": {"investment": 600, "maintenance_pct": 0.85},
+            "keller": {"investment": 100, "maintenance_pct": 0.90},
+            "heizung": {"investment": 40000, "maintenance_pct": 0.45},
+            "lueftung": {"investment": 19100, "maintenance_pct": 0.90},
+            "warmwasser": {"investment": 0, "maintenance_pct": 0}
+        }
+        
+        FUNDING_RATES = {
+            "aussenwand": 0.20,
+            "dach": 0.20,
+            "fenster": 0.20,
+            "keller": 0.20,
+            "heizung": 0.30,
+            "lueftung": 0.20,
+            "warmwasser": 0
+        }
+        
+        # Calculate costs
+        financial_data = {}
+        
+        for comp_type, calc in energy_calc.items():
+            if comp_type in COST_PER_SQM:
+                if "area" in calc:
+                    area = calc["area"]
+                    investment_per_sqm = COST_PER_SQM[comp_type]["investment"]
+                    investment = area * investment_per_sqm
+                else:
+                    investment = COST_PER_SQM[comp_type]["investment"]
+                
+                maintenance_pct = COST_PER_SQM[comp_type]["maintenance_pct"]
+                instandhaltung = investment * maintenance_pct
+                
+                funding_rate = FUNDING_RATES.get(comp_type, 0.15)
+                foerderung = investment * funding_rate
+                
+                financial_data[comp_type] = {
+                    "investition": round(investment, 0),
+                    "instandhaltung": round(instandhaltung, 0),
+                    "foerderung": round(foerderung, 0)
+                }
+        
+        # Return complete data
+        output = data.copy()
+        output["financial_data"] = financial_data
+        
+        return jsonify(output)
+    
+    except Exception as e:
+        import traceback
         return jsonify({
             "success": False,
             "error": str(e),
@@ -440,19 +583,9 @@ def generate_charts():
             "message": str(e)
         }), 500
 
-# Catch-all for debugging
-@app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
-def catch_all(path):
-    return jsonify({
-        "error": f"Route /{path} not found",
-        "available_routes": ["/", "/health", "/extract", "/generate", "/generate-charts", "/debug"],
-        "method_used": request.method,
-        "hint": "Check your URL and endpoint"
-    }), 404
-
 if __name__ == '__main__':
     print("=" * 50)
-    print("Starting Python PPT Service v2.5")
+    print("Starting Python PPT Service v2.6")
     print("Available routes:")
     for rule in app.url_map.iter_rules():
         print(f"  {rule}")
