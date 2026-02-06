@@ -19,7 +19,7 @@ app = Flask(__name__)
 def home():
     return jsonify({
         "status": "Python PPT Service is running",
-        "version": "2.2",
+        "version": "2.3",
         "endpoints": [
             "/health",
             "/extract",
@@ -37,11 +37,10 @@ def health():
     })
 
 # Helper: Extract text from PDF
-def extract_text_from_pdf(pdf_base64):
+def extract_text_from_pdf(pdf_bytes):
     """Extract all text from a PDF file"""
     try:
-        pdf_content = base64.b64decode(pdf_base64)
-        pdf_file = BytesIO(pdf_content)
+        pdf_file = BytesIO(pdf_bytes)
         pdf_reader = PyPDF2.PdfReader(pdf_file)
         
         text = ""
@@ -53,13 +52,11 @@ def extract_text_from_pdf(pdf_base64):
         return f"Error extracting PDF: {str(e)}"
 
 # Helper: Extract data from sqproj
-def extract_from_sqproj(sqproj_base64):
+def extract_from_sqproj(sqproj_bytes):
     """Extract data from .sqproj file (ZIP archive with XML/SQLite)"""
     try:
-        sqproj_content = base64.b64decode(sqproj_base64)
-        
         with tempfile.NamedTemporaryFile(delete=False, suffix='.sqproj') as tmp:
-            tmp.write(sqproj_content)
+            tmp.write(sqproj_bytes)
             tmp_path = tmp.name
         
         extracted = {}
@@ -124,54 +121,69 @@ def parse_building_data(text):
     
     return data
 
-# Extract data from .sqproj and PDFs
+# Extract data from files
 @app.route('/extract', methods=['POST'])
 def extract_data():
     try:
-        data = request.json
-        
-        if not data:
-            return jsonify({"error": "No JSON data provided"}), 400
-        
         extracted_data = {}
         processing_log = []
+        files_processed = {
+            "sqproj": False,
+            "sanierungsfahrplan_pdf": False,
+            "umsetzungshilfe_pdf": False
+        }
         
-        # 1. Process .sqproj file
-        if 'sqproj_file' in data and data['sqproj_file']:
-            processing_log.append("Processing .sqproj file...")
-            sqproj_data = extract_from_sqproj(data['sqproj_file'])
-            extracted_data.update(sqproj_data)
-            processing_log.append(f"Extracted {len(sqproj_data)} fields from sqproj")
-        else:
-            processing_log.append("WARNING: No sqproj_file provided")
-        
-        # 2. Process Sanierungsfahrplan PDF
-        if 'sanierungsfahrplan_pdf' in data and data['sanierungsfahrplan_pdf']:
-            processing_log.append("Processing Sanierungsfahrplan PDF...")
-            pdf_text = extract_text_from_pdf(data['sanierungsfahrplan_pdf'])
-            parsed_data = parse_building_data(pdf_text)
-            extracted_data.update(parsed_data)
-            processing_log.append(f"Extracted {len(parsed_data)} fields from Sanierungsfahrplan")
+        # Check if we're receiving files via multipart/form-data
+        if request.files:
+            processing_log.append("Receiving files via multipart/form-data")
             
-            # Store full text for AI processing (if needed later)
-            extracted_data['sanierungsfahrplan_text'] = pdf_text[:5000]  # First 5000 chars
-        else:
-            processing_log.append("WARNING: No sanierungsfahrplan_pdf provided")
+            # Process each uploaded file
+            for key in request.files:
+                file = request.files[key]
+                filename = file.filename.lower()
+                file_content = file.read()
+                
+                processing_log.append(f"Processing file: {file.filename} ({len(file_content)} bytes)")
+                
+                # Detect .sqproj file
+                if filename.endswith('.sqproj'):
+                    sqproj_data = extract_from_sqproj(file_content)
+                    extracted_data.update(sqproj_data)
+                    files_processed["sqproj"] = True
+                    processing_log.append(f"Extracted {len(sqproj_data)} fields from sqproj")
+                
+                # Detect Sanierungsfahrplan PDF
+                elif 'sanierung' in filename or 'fahrplan' in filename:
+                    pdf_text = extract_text_from_pdf(file_content)
+                    parsed_data = parse_building_data(pdf_text)
+                    extracted_data.update(parsed_data)
+                    extracted_data['sanierungsfahrplan_text'] = pdf_text[:5000]
+                    files_processed["sanierungsfahrplan_pdf"] = True
+                    processing_log.append(f"Extracted {len(parsed_data)} fields from Sanierungsfahrplan")
+                
+                # Detect Umsetzungshilfe PDF
+                elif 'umsetzung' in filename or 'hilfe' in filename:
+                    pdf_text = extract_text_from_pdf(file_content)
+                    parsed_data = parse_building_data(pdf_text)
+                    extracted_data.update(parsed_data)
+                    extracted_data['umsetzungshilfe_text'] = pdf_text[:5000]
+                    files_processed["umsetzungshilfe_pdf"] = True
+                    processing_log.append(f"Extracted {len(parsed_data)} fields from Umsetzungshilfe")
+                
+                # Unknown PDF - try to auto-assign
+                elif filename.endswith('.pdf'):
+                    pdf_text = extract_text_from_pdf(file_content)
+                    parsed_data = parse_building_data(pdf_text)
+                    extracted_data.update(parsed_data)
+                    
+                    if not files_processed["sanierungsfahrplan_pdf"]:
+                        files_processed["sanierungsfahrplan_pdf"] = True
+                        processing_log.append(f"Auto-assigned {file.filename} as Sanierungsfahrplan")
+                    elif not files_processed["umsetzungshilfe_pdf"]:
+                        files_processed["umsetzungshilfe_pdf"] = True
+                        processing_log.append(f"Auto-assigned {file.filename} as Umsetzungshilfe")
         
-        # 3. Process Umsetzungshilfe PDF
-        if 'umsetzungshilfe_pdf' in data and data['umsetzungshilfe_pdf']:
-            processing_log.append("Processing Umsetzungshilfe PDF...")
-            pdf_text = extract_text_from_pdf(data['umsetzungshilfe_pdf'])
-            parsed_data = parse_building_data(pdf_text)
-            extracted_data.update(parsed_data)
-            processing_log.append(f"Extracted {len(parsed_data)} fields from Umsetzungshilfe")
-            
-            # Store full text
-            extracted_data['umsetzungshilfe_text'] = pdf_text[:5000]
-        else:
-            processing_log.append("WARNING: No umsetzungshilfe_pdf provided")
-        
-        # Add some default placeholders for testing
+        # Add some default placeholders
         extracted_data.update({
             "kunde_name": "Herr Willi Waschbär",
             "projekt_datum": datetime.now().strftime("%d.%m.%Y"),
@@ -184,11 +196,7 @@ def extract_data():
             "extracted_data": extracted_data,
             "placeholder_count": len(extracted_data),
             "processing_log": processing_log,
-            "files_processed": {
-                "sqproj": bool(data.get('sqproj_file')),
-                "sanierungsfahrplan_pdf": bool(data.get('sanierungsfahrplan_pdf')),
-                "umsetzungshilfe_pdf": bool(data.get('umsetzungshilfe_pdf'))
-            }
+            "files_processed": files_processed
         })
     
     except Exception as e:
@@ -214,7 +222,6 @@ def generate_ppt():
         
         template_base64 = data['template_file']
         approved_data = data['approved_data']
-        template_filename = data.get('template_filename', 'template.pptx')
         
         # Decode base64 template
         try:
