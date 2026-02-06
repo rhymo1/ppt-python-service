@@ -19,7 +19,7 @@ app = Flask(__name__)
 def home():
     return jsonify({
         "status": "Python PPT Service is running",
-        "version": "2.3",
+        "version": "2.4",
         "endpoints": [
             "/health",
             "/extract",
@@ -134,7 +134,7 @@ def extract_data():
         }
         
         # Check if we're receiving files via multipart/form-data
-        if request.files:
+        if request.files and len(request.files) > 0:
             processing_log.append("Receiving files via multipart/form-data")
             
             # Process each uploaded file
@@ -182,6 +182,19 @@ def extract_data():
                     elif not files_processed["umsetzungshilfe_pdf"]:
                         files_processed["umsetzungshilfe_pdf"] = True
                         processing_log.append(f"Auto-assigned {file.filename} as Umsetzungshilfe")
+        else:
+            # No files received - return error
+            processing_log.append("ERROR: No files received in request")
+            return jsonify({
+                "success": False,
+                "error": "No files uploaded",
+                "hint": "Make sure files are being sent via multipart/form-data",
+                "request_info": {
+                    "content_type": request.content_type,
+                    "files_count": len(request.files) if request.files else 0,
+                    "form_keys": list(request.form.keys()) if request.form else []
+                }
+            }), 400
         
         # Add some default placeholders
         extracted_data.update({
@@ -200,9 +213,11 @@ def extract_data():
         })
     
     except Exception as e:
+        import traceback
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "traceback": traceback.format_exc()
         }), 500
 
 # Generate PPT from template
@@ -361,9 +376,11 @@ def generate_ppt():
         })
     
     except Exception as e:
+        import traceback
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "traceback": traceback.format_exc()
         }), 500
 
 # Generate charts
