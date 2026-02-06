@@ -19,12 +19,13 @@ app = Flask(__name__)
 def home():
     return jsonify({
         "status": "Python PPT Service is running",
-        "version": "2.4",
+        "version": "2.5",
         "endpoints": [
             "/health",
             "/extract",
             "/generate",
-            "/generate-charts"
+            "/generate-charts",
+            "/debug"
         ]
     })
 
@@ -34,6 +35,25 @@ def health():
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat()
+    })
+
+# DEBUG ROUTE - See what's being received
+@app.route('/debug', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+def debug_request():
+    return jsonify({
+        "method": request.method,
+        "path": request.path,
+        "url": request.url,
+        "content_type": request.content_type,
+        "headers": dict(request.headers),
+        "args": dict(request.args),
+        "form": dict(request.form),
+        "files": {key: {
+            "filename": file.filename,
+            "content_type": file.content_type,
+            "size": len(file.read())
+        } for key, file in request.files.items()} if request.files else {},
+        "data_length": len(request.data) if request.data else 0
     })
 
 # Helper: Extract text from PDF
@@ -121,10 +141,24 @@ def parse_building_data(text):
     
     return data
 
-# Extract data from files
-@app.route('/extract', methods=['POST'])
+# Extract data from files - ACCEPTS ALL HTTP METHODS FOR DEBUGGING
+@app.route('/extract', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'])
 def extract_data():
     try:
+        # Log what we received
+        print(f"=== EXTRACT ENDPOINT HIT ===")
+        print(f"Method: {request.method}")
+        print(f"Content-Type: {request.content_type}")
+        print(f"Files count: {len(request.files) if request.files else 0}")
+        print(f"Data length: {len(request.data) if request.data else 0}")
+        print(f"Headers: {dict(request.headers)}")
+        
+        if request.method != 'POST':
+            return jsonify({
+                "error": f"Method {request.method} not allowed",
+                "hint": "Use POST method"
+            }), 405
+        
         extracted_data = {}
         processing_log = []
         files_processed = {
@@ -183,16 +217,19 @@ def extract_data():
                         files_processed["umsetzungshilfe_pdf"] = True
                         processing_log.append(f"Auto-assigned {file.filename} as Umsetzungshilfe")
         else:
-            # No files received - return error
+            # No files received - return error with debug info
             processing_log.append("ERROR: No files received in request")
             return jsonify({
                 "success": False,
                 "error": "No files uploaded",
                 "hint": "Make sure files are being sent via multipart/form-data",
                 "request_info": {
+                    "method": request.method,
                     "content_type": request.content_type,
                     "files_count": len(request.files) if request.files else 0,
-                    "form_keys": list(request.form.keys()) if request.form else []
+                    "form_keys": list(request.form.keys()) if request.form else [],
+                    "data_length": len(request.data) if request.data else 0,
+                    "headers": dict(request.headers)
                 }
             }), 400
         
@@ -214,6 +251,8 @@ def extract_data():
     
     except Exception as e:
         import traceback
+        print(f"ERROR in /extract: {str(e)}")
+        print(traceback.format_exc())
         return jsonify({
             "success": False,
             "error": str(e),
@@ -401,5 +440,21 @@ def generate_charts():
             "message": str(e)
         }), 500
 
+# Catch-all for debugging
+@app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+def catch_all(path):
+    return jsonify({
+        "error": f"Route /{path} not found",
+        "available_routes": ["/", "/health", "/extract", "/generate", "/generate-charts", "/debug"],
+        "method_used": request.method,
+        "hint": "Check your URL and endpoint"
+    }), 404
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    print("=" * 50)
+    print("Starting Python PPT Service v2.5")
+    print("Available routes:")
+    for rule in app.url_map.iter_rules():
+        print(f"  {rule}")
+    print("=" * 50)
+    app.run(host='0.0.0.0', port=5000, debug=True)
