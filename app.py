@@ -16,7 +16,7 @@ app = Flask(__name__)
 def home():
     return jsonify({
         "status": "Python PPT Service is running",
-        "version": "2.0",
+        "version": "2.1",
         "endpoints": [
             "/health",
             "/extract",
@@ -33,54 +33,77 @@ def health():
         "timestamp": datetime.now().isoformat()
     })
 
-# Extract data from .sqproj file
+# Extract data from .sqproj file (accepts JSON with base64)
 @app.route('/extract', methods=['POST'])
 def extract_data():
     try:
-        # Get file from request
-        if 'file' not in request.files:
-            return jsonify({"error": "No file provided"}), 400
+        # Get JSON data from request
+        data = request.json
         
-        file = request.files['file']
+        if not data:
+            return jsonify({"error": "No JSON data provided"}), 400
+        
+        if 'sqproj_file' not in data:
+            return jsonify({"error": "Missing sqproj_file in request"}), 400
+        
+        sqproj_base64 = data['sqproj_file']
+        
+        # Decode base64 to bytes
+        try:
+            sqproj_content = base64.b64decode(sqproj_base64)
+        except Exception as e:
+            return jsonify({"error": f"Invalid base64 data: {str(e)}"}), 400
         
         # Save temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix='.sqproj') as tmp:
-            file.save(tmp.name)
+            tmp.write(sqproj_content)
             tmp_path = tmp.name
         
-        # Extract XML from sqproj
-        with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
-            # Find the main data XML file
-            xml_content = None
-            for filename in zip_ref.namelist():
-                if filename.endswith('.xml'):
-                    xml_content = zip_ref.read(filename)
-                    break
+        # Extract XML from sqproj (it's a zip file)
+        try:
+            with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
+                # Find the main data XML file
+                xml_content = None
+                for filename in zip_ref.namelist():
+                    if filename.endswith('.xml') or filename.endswith('.sqlite'):
+                        xml_content = zip_ref.read(filename)
+                        break
+        except Exception as e:
+            os.unlink(tmp_path)
+            return jsonify({"error": f"Failed to read sqproj file: {str(e)}"}), 400
         
         # Clean up temp file
         os.unlink(tmp_path)
         
         if not xml_content:
-            return jsonify({"error": "No XML found in sqproj file"}), 400
+            return jsonify({"error": "No XML or SQLite data found in sqproj file"}), 400
         
-        # Parse XML
-        root = ET.fromstring(xml_content)
-        
-        # Extract data (customize based on your XML structure)
+        # Parse XML (if it's XML)
         extracted_data = {}
-        for elem in root.iter():
-            if elem.text and elem.text.strip():
-                extracted_data[elem.tag] = elem.text.strip()
+        try:
+            root = ET.fromstring(xml_content)
+            
+            # Extract data (customize based on your XML structure)
+            for elem in root.iter():
+                if elem.text and elem.text.strip():
+                    extracted_data[elem.tag] = elem.text.strip()
+        except:
+            # If XML parsing fails, return basic info
+            extracted_data = {
+                "info": "Data extracted from sqproj file",
+                "file_size": len(sqproj_content)
+            }
         
         return jsonify({
-            "status": "success",
-            "data": extracted_data
+            "success": True,
+            "extracted_data": extracted_data,
+            "placeholder_count": len(extracted_data)
         })
     
     except Exception as e:
         return jsonify({
-            "status": "error",
-            "message": str(e)
+            "success": False,
+            "error": str(e)
         }), 500
 
 # Generate PPT from template
@@ -263,8 +286,8 @@ def generate_ppt():
     
     except Exception as e:
         return jsonify({
-            "status": "error",
-            "message": str(e)
+            "success": False,
+            "error": str(e)
         }), 500
 
 # Generate charts (placeholder - will implement with matplotlib)
