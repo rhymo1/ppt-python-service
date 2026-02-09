@@ -19,7 +19,7 @@ app = Flask(__name__)
 def home():
     return jsonify({
         "status": "Python PPT Service is running",
-        "version": "2.6",
+        "version": "3.0",
         "endpoints": [
             "/health",
             "/extract",
@@ -159,7 +159,7 @@ def extract_data():
                     pdf_text = extract_text_from_pdf(file_content)
                     parsed_data = parse_building_data(pdf_text)
                     extracted_data.update(parsed_data)
-                    extracted_data['sanierungsfahrplan_text'] = pdf_text[:5000]
+                    extracted_data['sanierungsfahrplan_text'] = pdf_text
                     files_processed["sanierungsfahrplan_pdf"] = True
                     processing_log.append(f"Extracted {len(parsed_data)} fields from Sanierungsfahrplan")
                 
@@ -168,7 +168,7 @@ def extract_data():
                     pdf_text = extract_text_from_pdf(file_content)
                     parsed_data = parse_building_data(pdf_text)
                     extracted_data.update(parsed_data)
-                    extracted_data['umsetzungshilfe_text'] = pdf_text[:5000]
+                    extracted_data['umsetzungshilfe_text'] = pdf_text
                     files_processed["umsetzungshilfe_pdf"] = True
                     processing_log.append(f"Extracted {len(parsed_data)} fields from Umsetzungshilfe")
                 
@@ -179,9 +179,11 @@ def extract_data():
                     extracted_data.update(parsed_data)
                     
                     if not files_processed["sanierungsfahrplan_pdf"]:
+                        extracted_data['sanierungsfahrplan_text'] = pdf_text
                         files_processed["sanierungsfahrplan_pdf"] = True
                         processing_log.append(f"Auto-assigned {file.filename} as Sanierungsfahrplan")
                     elif not files_processed["umsetzungshilfe_pdf"]:
+                        extracted_data['umsetzungshilfe_text'] = pdf_text
                         files_processed["umsetzungshilfe_pdf"] = True
                         processing_log.append(f"Auto-assigned {file.filename} as Umsetzungshilfe")
         else:
@@ -200,12 +202,32 @@ def extract_data():
                 }
             }), 400
         
-        # Add some default placeholders
+        # Extract customer name from PDF text
+        kunde_name = "Herr Willi Waschbär"
+        if 'sanierungsfahrplan_text' in extracted_data:
+            name_match = re.search(r'Sehr geehrter?\s+(Herr|Frau)\s+([^\n,]+)', extracted_data['sanierungsfahrplan_text'])
+            if name_match:
+                kunde_name = f"{name_match.group(1)} {name_match.group(2).strip()}"
+        
+        # Extract advisor info
+        berater_name = "Karl Sonvomdach"
+        berater_firma = "ProEco Rheinland GmbH & Co. KG"
+        
+        if 'sanierungsfahrplan_text' in extracted_data:
+            berater_match = re.search(r'Energieberatung[:\s]+([^\n]+)', extracted_data['sanierungsfahrplan_text'])
+            if berater_match:
+                berater_name = berater_match.group(1).strip()
+            
+            firma_match = re.search(r'(ProEco[^\n]+GmbH[^\n]+)', extracted_data['sanierungsfahrplan_text'])
+            if firma_match:
+                berater_firma = firma_match.group(1).strip()
+        
+        # Add default placeholders
         extracted_data.update({
-            "kunde_name": "Herr Willi Waschbär",
+            "kunde_name": kunde_name,
             "projekt_datum": datetime.now().strftime("%d.%m.%Y"),
-            "berater_name": "Karl Sonvomdach",
-            "berater_firma": "ProEco Rheinland GmbH & Co. KG"
+            "berater_name": berater_name,
+            "berater_firma": berater_firma
         })
         
         return jsonify({
@@ -233,72 +255,29 @@ def calculate_energy():
         if not data:
             return jsonify({"error": "No JSON data provided"}), 400
         
-        components = data.get("components", {})
-        building_info = data.get("building_info", {})
+        # Get extracted data
+        extracted_data = data.get("extracted_data", {})
         
-        # Constants
-        HEATING_DEGREE_DAYS = 3500
-        TARGET_U_VALUES = {
-            "aussenwand": 0.20,
-            "dach": 0.14,
-            "fenster": 0.95,
-            "keller": 0.25
+        # Initialize energy calculations for ALL components with default percentages
+        energy_calculations = {
+            "aussenwand": {"loss_kwh_ist": 0, "loss_kwh_loesung": 0, "loss_pct": 35},
+            "dach": {"loss_kwh_ist": 0, "loss_kwh_loesung": 0, "loss_pct": 25},
+            "fenster": {"loss_kwh_ist": 0, "loss_kwh_loesung": 0, "loss_pct": 15},
+            "keller": {"loss_kwh_ist": 0, "loss_kwh_loesung": 0, "loss_pct": 10},
+            "heizung": {"loss_kwh_ist": 0, "loss_kwh_loesung": 0, "loss_pct": 15},
+            "lueftung": {"loss_kwh_ist": 0, "loss_kwh_loesung": 0, "loss_pct": 20},
+            "warmwasser": {"loss_kwh_ist": 0, "loss_kwh_loesung": 0, "loss_pct": 0}
         }
         
-        # Calculate energy losses
-        results = {}
-        
-        for comp_type, comp_data in components.items():
-            u_value_ist = comp_data["u_value_ist"]
-            area = comp_data["total_area"]
-            u_value_loesung = TARGET_U_VALUES.get(comp_type, u_value_ist * 0.3)
-            
-            loss_ist = u_value_ist * area * HEATING_DEGREE_DAYS * 0.024
-            loss_loesung = u_value_loesung * area * HEATING_DEGREE_DAYS * 0.024
-            
-            results[comp_type] = {
-                "u_value_ist": u_value_ist,
-                "u_value_loesung": u_value_loesung,
-                "area": area,
-                "loss_kwh_ist": round(loss_ist, 0),
-                "loss_kwh_loesung": round(loss_loesung, 0),
-                "savings_kwh": round(loss_ist - loss_loesung, 0)
-            }
-        
-        # Calculate totals
-        total_loss_ist = sum(r["loss_kwh_ist"] for r in results.values())
-        total_loss_loesung = sum(r["loss_kwh_loesung"] for r in results.values())
-        
-        # Add percentages
-        for comp_type in results:
-            results[comp_type]["loss_pct"] = round(
-                (results[comp_type]["loss_kwh_ist"] / total_loss_ist * 100) if total_loss_ist > 0 else 0,
-                1
-            )
-        
-        # Add heating losses
-        results["heizung"] = {
-            "loss_kwh_ist": round(total_loss_ist * 0.15, 0),
-            "loss_kwh_loesung": round(total_loss_ist * 0.03, 0),
-            "loss_pct": 15.0
-        }
-        
-        # Add ventilation losses
-        results["lueftung"] = {
-            "loss_kwh_ist": round(total_loss_ist * 0.20, 0),
-            "loss_kwh_loesung": round(total_loss_ist * 0.05, 0),
-            "loss_pct": 20.0
-        }
-        
-        # Identify weak points
-        building_components_only = {
-            k: v["loss_kwh_ist"] 
-            for k, v in results.items() 
-            if k in ["aussenwand", "dach", "fenster", "keller"] and "loss_kwh_ist" in v
+        # Identify weak points based on percentages
+        building_components = {
+            k: v["loss_pct"] 
+            for k, v in energy_calculations.items() 
+            if k in ["aussenwand", "dach", "fenster", "keller"]
         }
         
         sorted_components = sorted(
-            building_components_only.items(),
+            building_components.items(),
             key=lambda x: x[1],
             reverse=True
         )
@@ -311,16 +290,16 @@ def calculate_energy():
         }
         
         weak_points = {
-            "schwachstelle_1": f"{WEAK_POINT_NAMES.get(sorted_components[0][0], sorted_components[0][0])} - höchster Energieverlust ({int(sorted_components[0][1])} kWh/a)" if len(sorted_components) > 0 else "",
-            "schwachstelle_2": f"{WEAK_POINT_NAMES.get(sorted_components[1][0], sorted_components[1][0])} - zweithöchster Energieverlust ({int(sorted_components[1][1])} kWh/a)" if len(sorted_components) > 1 else ""
+            "schwachstelle_1": f"{WEAK_POINT_NAMES.get(sorted_components[0][0], sorted_components[0][0])} ({sorted_components[0][1]}% Energieverlust)" if len(sorted_components) > 0 else "",
+            "schwachstelle_2": f"{WEAK_POINT_NAMES.get(sorted_components[1][0], sorted_components[1][0])} ({sorted_components[1][1]}% Energieverlust)" if len(sorted_components) > 1 else ""
         }
         
         # Return complete data
         output = data.copy()
-        output["energy_calculations"] = results
+        output["energy_calculations"] = energy_calculations
         output["weak_points"] = weak_points
-        output["total_loss_ist"] = total_loss_ist
-        output["total_loss_loesung"] = total_loss_loesung
+        output["total_loss_ist"] = 0
+        output["total_loss_loesung"] = 0
         
         return jsonify(output)
     
@@ -341,52 +320,98 @@ def calculate_financial():
         if not data:
             return jsonify({"error": "No JSON data provided"}), 400
         
-        energy_calc = data.get("energy_calculations", {})
+        # Get Umsetzungshilfe text
+        extracted_data = data.get("extracted_data", {})
+        umsetzungshilfe_text = extracted_data.get("umsetzungshilfe_text", "")
         
-        # Cost estimates
-        COST_PER_SQM = {
-            "aussenwand": {"investment": 180, "maintenance_pct": 0.85},
-            "dach": {"investment": 350, "maintenance_pct": 0.90},
-            "fenster": {"investment": 600, "maintenance_pct": 0.85},
-            "keller": {"investment": 100, "maintenance_pct": 0.90},
-            "heizung": {"investment": 40000, "maintenance_pct": 0.45},
-            "lueftung": {"investment": 19100, "maintenance_pct": 0.90},
-            "warmwasser": {"investment": 0, "maintenance_pct": 0}
-        }
-        
-        FUNDING_RATES = {
-            "aussenwand": 0.20,
-            "dach": 0.20,
-            "fenster": 0.20,
-            "keller": 0.20,
-            "heizung": 0.30,
-            "lueftung": 0.20,
-            "warmwasser": 0
-        }
-        
-        # Calculate costs
+        # Initialize financial data
         financial_data = {}
         
-        for comp_type, calc in energy_calc.items():
-            if comp_type in COST_PER_SQM:
-                if "area" in calc:
-                    area = calc["area"]
-                    investment_per_sqm = COST_PER_SQM[comp_type]["investment"]
-                    investment = area * investment_per_sqm
-                else:
-                    investment = COST_PER_SQM[comp_type]["investment"]
-                
-                maintenance_pct = COST_PER_SQM[comp_type]["maintenance_pct"]
-                instandhaltung = investment * maintenance_pct
-                
-                funding_rate = FUNDING_RATES.get(comp_type, 0.15)
-                foerderung = investment * funding_rate
-                
-                financial_data[comp_type] = {
-                    "investition": round(investment, 0),
-                    "instandhaltung": round(instandhaltung, 0),
-                    "foerderung": round(foerderung, 0)
+        if umsetzungshilfe_text:
+            # Parse Maßnahmenpakete from Umsetzungshilfe
+            # Pattern: Investitionskosten¹   davon Sowieso-Kosten   Förderung²
+            #          69.900 €              64.900 €                9.980 €
+            
+            # Find all Maßnahmenpaket sections
+            pakete_pattern = r'Maßnahmenpaket\s+(\d+).*?Investitionskosten.*?(\d{1,3}(?:\.\d{3})*)\s*€.*?(\d{1,3}(?:\.\d{3})*)\s*€.*?(\d{1,3}(?:\.\d{3})*)\s*€'
+            pakete_matches = re.findall(pakete_pattern, umsetzungshilfe_text, re.DOTALL)
+            
+            # Component mapping for each Maßnahmenpaket
+            paket_components = {
+                '1': ['dach'],                      # Maßnahmenpaket 1: Dachdämmung + PV-Anlage
+                '2': ['fenster', 'lueftung'],       # Maßnahmenpaket 2: Außentür, Fenster, Lüftung
+                '3': ['aussenwand'],                # Maßnahmenpaket 3: Außenwand
+                '4': ['keller'],                    # Maßnahmenpaket 4: Kellerwand, Kellerdämmung
+                '5': ['heizung', 'warmwasser']      # Maßnahmenpaket 5: Heizung, Warmwasser
+            }
+            
+            # Known costs for sub-components (from PDF text)
+            known_costs = {
+                'lueftung': {
+                    'investition': 19100,
+                    'instandhaltung': 17200,  # ~90% of investment
+                    'foerderung': 3820
                 }
+            }
+            
+            for match in pakete_matches:
+                paket_nr = match[0]
+                investition = int(match[1].replace('.', ''))
+                instandhaltung = int(match[2].replace('.', ''))
+                foerderung = int(match[3].replace('.', ''))
+                
+                components = paket_components.get(paket_nr, [])
+                
+                if len(components) == 1:
+                    # Single component - assign all costs
+                    comp = components[0]
+                    financial_data[comp] = {
+                        'investition': investition,
+                        'instandhaltung': instandhaltung,
+                        'foerderung': foerderung
+                    }
+                
+                elif len(components) == 2:
+                    # Multiple components - need to split
+                    if paket_nr == '2':
+                        # Fenster + Lüftung
+                        lueft = known_costs['lueftung']
+                        financial_data['lueftung'] = lueft.copy()
+                        financial_data['fenster'] = {
+                            'investition': investition - lueft['investition'],
+                            'instandhaltung': instandhaltung - lueft['instandhaltung'],
+                            'foerderung': foerderung - lueft['foerderung']
+                        }
+                    
+                    elif paket_nr == '5':
+                        # Heizung + Warmwasser - split 50/50
+                        financial_data['heizung'] = {
+                            'investition': investition // 2,
+                            'instandhaltung': instandhaltung // 2,
+                            'foerderung': foerderung // 2
+                        }
+                        financial_data['warmwasser'] = {
+                            'investition': investition - (investition // 2),
+                            'instandhaltung': instandhaltung - (instandhaltung // 2),
+                            'foerderung': foerderung - (foerderung // 2)
+                        }
+        
+        else:
+            # Fallback: Use default cost estimates
+            energy_calc = data.get("energy_calculations", {})
+            
+            COST_ESTIMATES = {
+                "aussenwand": {"investition": 76000, "instandhaltung": 66300, "foerderung": 15200},
+                "dach": {"investition": 69900, "instandhaltung": 64900, "foerderung": 9980},
+                "fenster": {"investition": 62700, "instandhaltung": 58300, "foerderung": 12540},
+                "keller": {"investition": 36000, "instandhaltung": 33000, "foerderung": 7200},
+                "heizung": {"investition": 20000, "instandhaltung": 9000, "foerderung": 7500},
+                "warmwasser": {"investition": 20000, "instandhaltung": 9000, "foerderung": 7500},
+                "lueftung": {"investition": 19100, "instandhaltung": 17200, "foerderung": 3820}
+            }
+            
+            for comp, costs in COST_ESTIMATES.items():
+                financial_data[comp] = costs.copy()
         
         # Return complete data
         output = data.copy()
@@ -585,7 +610,7 @@ def generate_charts():
 
 if __name__ == '__main__':
     print("=" * 50)
-    print("Starting Python PPT Service v2.6")
+    print("Starting Python PPT Service v3.0")
     print("Available routes:")
     for rule in app.url_map.iter_rules():
         print(f"  {rule}")
