@@ -1,9 +1,9 @@
 """
-Comprehensive Data Extraction Flask App v4.0
+Flask App v4.0 - Comprehensive Data Extraction & PPT Generation
 Extracts ALL data from .sqproj and PDFs for intelligent PPT placeholder filling
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import zipfile
 import xml.etree.ElementTree as ET
 import os
@@ -12,11 +12,47 @@ import base64
 from datetime import datetime
 from io import BytesIO
 from pptx import Presentation
+from pptx.util import Inches, Pt
+from PIL import Image
 import PyPDF2
 import json
 import re
 
+# Matplotlib for chart generation
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend
+import matplotlib.pyplot as plt
+import numpy as np
+
 app = Flask(__name__)
+
+# ============================================================================
+# ROOT & HEALTH ENDPOINTS
+# ============================================================================
+
+@app.route('/')
+def home():
+    return jsonify({
+        "status": "Comprehensive Data Extraction Service v4.0",
+        "version": "4.0",
+        "description": "Extracts ALL data from building renovation documents",
+        "endpoints": [
+            "/health",
+            "/extract-comprehensive",
+            "/read-template-placeholders",
+            "/generate-charts",
+            "/generate"
+        ]
+    })
+
+@app.route('/health')
+def health():
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": "4.0"
+    })
+
 
 # ============================================================================
 # HELPER: Comprehensive PDF Parser
@@ -27,7 +63,6 @@ def extract_all_data_from_pdf(pdf_bytes):
     Extract ALL data from PDF:
     - All text (page by page)
     - All numbers with context
-    - All tables (structured)
     - Metadata
     """
     try:
@@ -38,8 +73,7 @@ def extract_all_data_from_pdf(pdf_bytes):
             'pages': [],
             'full_text': '',
             'metadata': {},
-            'numbers_found': [],
-            'tables_found': []
+            'numbers_found': []
         }
         
         # Extract metadata
@@ -62,7 +96,7 @@ def extract_all_data_from_pdf(pdf_bytes):
             result['full_text'] += page_text + '\n\n'
         
         # Extract all numbers with context
-        number_pattern = r'([\w\s]{0,30})([\d\.,]+)\s*(€|kWh|m²|kg|%|W|cm|mm)?'
+        number_pattern = r'([\w\s]{0,30})([\d\.,]+)\s*(€|kWh|m²|kg|%|W|cm|mm|a)?'
         for match in re.finditer(number_pattern, result['full_text']):
             result['numbers_found'].append({
                 'context': match.group(1).strip(),
@@ -147,77 +181,6 @@ def extract_all_from_sqproj(sqproj_bytes):
         
     except Exception as e:
         return {'error': f'Failed to process sqproj: {str(e)}'}
-
-
-# ============================================================================
-# HELPER: Structure All Extracted Data
-# ============================================================================
-
-def structure_complete_data(sqproj_data, pdf1_data, pdf2_data):
-    """
-    Merge all extracted data into a unified, intelligently structured format
-    ready for AI mapping to PPT placeholders.
-    """
-    
-    # Combine all text for comprehensive search
-    all_text = ''
-    if pdf1_data.get('full_text'):
-        all_text += pdf1_data['full_text'] + '\n\n'
-    if pdf2_data.get('full_text'):
-        all_text += pdf2_data['full_text'] + '\n\n'
-    
-    # Normalize whitespace for easier pattern matching
-    normalized = re.sub(r'\s+', ' ', all_text)
-    
-    # Extract key data points with comprehensive patterns
-    structured = {
-        'raw_data': {
-            'sqproj': sqproj_data,
-            'pdf1': pdf1_data,
-            'pdf2': pdf2_data
-        },
-        'extracted': {}
-    }
-    
-    # Building Information
-    structured['extracted']['building'] = extract_building_info(normalized)
-    
-    # Consultant Information
-    structured['extracted']['consultant'] = extract_consultant_info(normalized)
-    
-    # Current Energy State
-    structured['extracted']['energy_current'] = extract_energy_current(normalized)
-    
-    # Target Energy State
-    structured['extracted']['energy_target'] = extract_energy_target(normalized)
-    
-    # Components (7 components × IST + LÖSUNG)
-    structured['extracted']['components'] = extract_all_components(normalized)
-    
-    # Measure Packages (5 packages)
-    structured['extracted']['measure_packages'] = extract_measure_packages(normalized)
-    
-    # Costs Summary
-    structured['extracted']['costs'] = extract_costs(normalized)
-    
-    # Timeline
-    structured['extracted']['timeline'] = extract_timeline(normalized)
-    
-    # U-values (all components, before/after)
-    structured['extracted']['u_values'] = extract_u_values(normalized)
-    
-    # Technical specifications
-    structured['extracted']['technical_specs'] = extract_technical_specs(normalized)
-    
-    # All numbers found (for anything we might have missed)
-    all_numbers = []
-    if pdf1_data.get('numbers_found'):
-        all_numbers.extend(pdf1_data['numbers_found'])
-    if pdf2_data.get('numbers_found'):
-        all_numbers.extend(pdf2_data['numbers_found'])
-    structured['extracted']['all_numbers'] = all_numbers
-    
-    return structured
 
 
 # ============================================================================
@@ -378,7 +341,6 @@ def extract_all_components(text):
             'u_value_target': ''
         }
     
-    # Extract descriptions from tables/sections
     # IST descriptions
     ist_patterns = {
         'aussenwand': r'(?:Außen)?[Ww]ände?[^\n]{0,20}(?:Massiv|gemauert|ungedämmt)[^\n]{0,60}',
@@ -401,7 +363,7 @@ def extract_all_components(text):
         'dach': r'Dach[^\n]{0,20}(?:ZSD|ASD|Dämmung)[^\n]{0,60}',
         'fenster': r'Fenster[^\n]{0,20}Uw-Wert[^\n]{0,60}',
         'keller': r'Keller[^\n]{0,20}Dämmung[^\n]{0,60}',
-        'heizung': r'(?:Wärmepumpe|Heizung)[^\n]{0,20}(?:Lu-Wasser|L/W)[^\n]{0,60}',
+        'heizung': r'(?:Wärmepumpe|Heizung)[^\n]{0,20}(?:Luft-Wasser|L/W)[^\n]{0,60}',
         'warmwasser': r'Warmwasser[^\n]{0,20}(?:Wärmepumpe|Heizungsanlage)[^\n]{0,60}',
         'lueftung': r'Lüftung[^\n]{0,20}(?:WRG|Wärmerückgewinnung)[^\n]{0,60}'
     }
@@ -431,28 +393,22 @@ def extract_measure_packages(text):
         }
         
         # Find package name
-        patterns = [
-            (1, r'Maßnahmenpaket\s+1[^\n]*([^\n]{10,60})'),
-            (2, r'Maßnahmenpaket\s+2[^\n]*([^\n]{10,60})'),
-            (3, r'Maßnahmenpaket\s+3[^\n]*([^\n]{10,60})'),
-            (4, r'Maßnahmenpaket\s+4[^\n]*([^\n]{10,60})'),
-            (5, r'Maßnahmenpaket\s+5[^\n]*([^\n]{10,60})')
-        ]
-        
-        for pkg_id, pattern in patterns:
-            if pkg_id == i:
-                m = re.search(pattern, text)
-                if m:
-                    package['name'] = m.group(1).strip()
-        
-        # Find costs in table format
-        # Look for pattern: number € number € number € near the package
-        cost_pattern = rf'Maßnahmenpaket\s+{i}.*?([\d\.]+)\s*€[^\d]{{0,20}}([\d\.]+)\s*€[^\d]{{0,20}}([\d\.]+)\s*€'
-        m = re.search(cost_pattern, text, re.DOTALL)
+        name_pattern = rf'Maßnahmenpaket\s+{i}[^\n]*\n[^\n]*([^\n]{{10,80}})'
+        m = re.search(name_pattern, text)
         if m:
-            package['investment'] = m.group(1).replace('.', '')
-            package['sowieso'] = m.group(2).replace('.', '')
-            package['funding'] = m.group(3).replace('.', '')
+            package['name'] = m.group(1).strip()
+        
+        # Find costs - look for three consecutive euro amounts
+        cost_section = re.search(rf'Maßnahmenpaket\s+{i}.*?(\d+\.\d{{3}})\s*€.*?(\d+\.\d{{3}})\s*€.*?(\d+\.\d{{3}})\s*€', text, re.DOTALL)
+        if cost_section:
+            package['investment'] = cost_section.group(1).replace('.', '')
+            package['sowieso'] = cost_section.group(2).replace('.', '')
+            package['funding'] = cost_section.group(3).replace('.', '')
+        
+        # Find year (202X)
+        year_match = re.search(rf'Maßnahmenpaket\s+{i}.*?(202\d)', text, re.DOTALL)
+        if year_match:
+            package['year'] = year_match.group(1)
         
         packages.append(package)
     
@@ -464,11 +420,9 @@ def extract_costs(text):
     costs = {}
     
     # Total investment
-    m = re.search(r'(?:Gesamtsanierung|Total)[^\n]{0,40}([\d\.]+)\s*€', text)
+    m = re.search(r'(?:Gesamtsanierung|gesamt)[^\n]{0,80}(\d+\.\d{3})\s*€', text, re.IGNORECASE)
     if m:
         costs['total_investment'] = m.group(1).replace('.', '')
-    
-    # Could extract total sowieso, total funding similarly
     
     return costs
 
@@ -524,11 +478,82 @@ def extract_technical_specs(text):
         specs['jaz'] = m.group(1).replace(',', '.')
     
     # Heat pump type
-    m = re.search(r'Wärmepumpe[^\n]{0,40}(Lu[^\n]{0,20}Wasser)', text)
+    m = re.search(r'Wärmepumpe[^\n]{0,40}(Luft[^\n]{0,20}Wasser)', text)
     if m:
         specs['heat_pump_type'] = 'Luft-Wasser'
     
     return specs
+
+
+# ============================================================================
+# HELPER: Structure All Extracted Data
+# ============================================================================
+
+def structure_complete_data(sqproj_data, pdf1_data, pdf2_data):
+    """
+    Merge all extracted data into a unified, intelligently structured format
+    ready for AI mapping to PPT placeholders.
+    """
+    
+    # Combine all text for comprehensive search
+    all_text = ''
+    if pdf1_data.get('full_text'):
+        all_text += pdf1_data['full_text'] + '\n\n'
+    if pdf2_data.get('full_text'):
+        all_text += pdf2_data['full_text'] + '\n\n'
+    
+    # Normalize whitespace for easier pattern matching
+    normalized = re.sub(r'\s+', ' ', all_text)
+    
+    # Extract key data points with comprehensive patterns
+    structured = {
+        'raw_data': {
+            'sqproj': sqproj_data,
+            'pdf1': pdf1_data,
+            'pdf2': pdf2_data
+        },
+        'extracted': {}
+    }
+    
+    # Building Information
+    structured['extracted']['building'] = extract_building_info(normalized)
+    
+    # Consultant Information
+    structured['extracted']['consultant'] = extract_consultant_info(normalized)
+    
+    # Current Energy State
+    structured['extracted']['energy_current'] = extract_energy_current(normalized)
+    
+    # Target Energy State
+    structured['extracted']['energy_target'] = extract_energy_target(normalized)
+    
+    # Components (7 components × IST + LÖSUNG)
+    structured['extracted']['components'] = extract_all_components(normalized)
+    
+    # Measure Packages (5 packages)
+    structured['extracted']['measure_packages'] = extract_measure_packages(normalized)
+    
+    # Costs Summary
+    structured['extracted']['costs'] = extract_costs(normalized)
+    
+    # Timeline
+    structured['extracted']['timeline'] = extract_timeline(normalized)
+    
+    # U-values (all components, before/after)
+    structured['extracted']['u_values'] = extract_u_values(normalized)
+    
+    # Technical specifications
+    structured['extracted']['technical_specs'] = extract_technical_specs(normalized)
+    
+    # All numbers found (for anything we might have missed)
+    all_numbers = []
+    if pdf1_data.get('numbers_found'):
+        all_numbers.extend(pdf1_data['numbers_found'])
+    if pdf2_data.get('numbers_found'):
+        all_numbers.extend(pdf2_data['numbers_found'])
+    structured['extracted']['all_numbers'] = all_numbers[:100]  # Limit to first 100
+    
+    return structured
 
 
 # ============================================================================
@@ -568,20 +593,188 @@ def read_template_placeholders(template_bytes):
 
 
 # ============================================================================
-# API ENDPOINTS
+# CHART GENERATION HELPERS
 # ============================================================================
 
-@app.route('/')
-def home():
-    return jsonify({
-        "status": "Comprehensive Data Extraction Service v4.0",
-        "endpoints": [
-            "/extract-comprehensive",
-            "/read-template-placeholders",
-            "/generate"
-        ]
-    })
+def generate_energy_loss_pie_chart(component_name, loss_ist, loss_loesung, loss_pct):
+    """Generate a pie chart showing energy loss for a component"""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    
+    # IST state
+    colors_ist = ['#dc3545', '#6c757d']
+    ax1.pie([loss_ist, 100-loss_ist], labels=['Verlust', 'Effizienz'], 
+            colors=colors_ist, autopct='%1.1f%%', startangle=90)
+    ax1.set_title(f'{component_name} - IST-Zustand')
+    
+    # LÖSUNG state
+    colors_loesung = ['#28a745', '#6c757d']
+    ax2.pie([loss_loesung, 100-loss_loesung], labels=['Verlust', 'Effizienz'], 
+            colors=colors_loesung, autopct='%1.1f%%', startangle=90)
+    ax2.set_title(f'{component_name} - LÖSUNG')
+    
+    plt.tight_layout()
+    
+    # Convert to base64
+    buffer = BytesIO()
+    plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+    buffer.seek(0)
+    image_base64 = base64.b64encode(buffer.read()).decode()
+    plt.close()
+    
+    return image_base64
 
+
+def generate_energy_efficiency_scale(current_value, target_value, max_value=300):
+    """Generate energy efficiency scale visualization"""
+    fig, ax = plt.subplots(figsize=(12, 3))
+    
+    # Color gradient from green to red
+    colors = ['#28a745', '#5cb85c', '#ffc107', '#fd7e14', '#dc3545']
+    ranges = [0, 60, 90, 130, 180, max_value]
+    
+    # Draw colored bars
+    for i in range(len(colors)):
+        ax.barh(0, ranges[i+1] - ranges[i], left=ranges[i], 
+                height=0.5, color=colors[i], alpha=0.7)
+    
+    # Mark current and target values
+    ax.plot(current_value, 0, 'rv', markersize=15, label=f'IST: {current_value} kWh/(m²a)')
+    ax.plot(target_value, 0, 'g^', markersize=15, label=f'ZIEL: {target_value} kWh/(m²a)')
+    
+    ax.set_xlim(0, max_value)
+    ax.set_ylim(-0.5, 0.5)
+    ax.set_xlabel('Primärenergiebedarf [kWh/(m²a)]')
+    ax.set_yticks([])
+    ax.legend(loc='upper right')
+    ax.set_title('Energieeffizienz-Skala')
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    buffer = BytesIO()
+    plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+    buffer.seek(0)
+    image_base64 = base64.b64encode(buffer.read()).decode()
+    plt.close()
+    
+    return image_base64
+
+
+def generate_timeline_chart(measure_packages):
+    """Generate Gantt-style timeline chart for measure packages"""
+    if not measure_packages or len(measure_packages) == 0:
+        return None
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Extract data
+    packages = []
+    years = []
+    for pkg in measure_packages:
+        if pkg.get('name') and pkg.get('year'):
+            packages.append(pkg['name'])
+            try:
+                years.append(int(pkg['year']))
+            except:
+                years.append(2025)
+    
+    if not packages:
+        return None
+    
+    # Create timeline
+    min_year = min(years) if years else 2025
+    max_year = max(years) if years else 2029
+    
+    colors = ['#007bff', '#28a745', '#ffc107', '#dc3545', '#6f42c1']
+    
+    for i, (pkg, year) in enumerate(zip(packages, years)):
+        ax.barh(i, 1, left=year-min_year, height=0.5, 
+                color=colors[i % len(colors)], alpha=0.8)
+        ax.text(year-min_year+0.5, i, pkg, va='center', fontsize=9)
+    
+    ax.set_yticks(range(len(packages)))
+    ax.set_yticklabels([f'MP{i+1}' for i in range(len(packages))])
+    ax.set_xticks(range(max_year - min_year + 1))
+    ax.set_xticklabels([str(min_year + i) for i in range(max_year - min_year + 1)])
+    ax.set_xlabel('Jahr')
+    ax.set_title('Sanierungsfahrplan - Zeitliche Umsetzung')
+    ax.grid(True, alpha=0.3, axis='x')
+    
+    plt.tight_layout()
+    
+    buffer = BytesIO()
+    plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+    buffer.seek(0)
+    image_base64 = base64.b64encode(buffer.read()).decode()
+    plt.close()
+    
+    return image_base64
+
+
+def generate_cost_comparison_chart(measure_packages):
+    """Generate cost comparison bar chart"""
+    if not measure_packages or len(measure_packages) == 0:
+        return None
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Extract data
+    labels = []
+    investments = []
+    sowiesos = []
+    fundings = []
+    
+    for i, pkg in enumerate(measure_packages):
+        labels.append(f'MP{i+1}')
+        try:
+            inv = pkg.get('investment', '0').replace('.', '').replace(',', '.')
+            investments.append(float(inv) if inv else 0)
+            
+            sow = pkg.get('sowieso', '0').replace('.', '').replace(',', '.')
+            sowiesos.append(float(sow) if sow else 0)
+            
+            fun = pkg.get('funding', '0').replace('.', '').replace(',', '.')
+            fundings.append(float(fun) if fun else 0)
+        except:
+            investments.append(0)
+            sowiesos.append(0)
+            fundings.append(0)
+    
+    if sum(investments) == 0:
+        return None
+    
+    x = np.arange(len(labels))
+    width = 0.25
+    
+    ax.bar(x - width, investments, width, label='Investition', color='#dc3545')
+    ax.bar(x, sowiesos, width, label='Sowieso-Kosten', color='#ffc107')
+    ax.bar(x + width, fundings, width, label='Förderung', color='#28a745')
+    
+    ax.set_xlabel('Maßnahmenpaket')
+    ax.set_ylabel('Kosten [€]')
+    ax.set_title('Kostenvergleich der Maßnahmenpakete')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.legend()
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Format y-axis as currency
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{int(x):,} €'.replace(',', '.')))
+    
+    plt.tight_layout()
+    
+    buffer = BytesIO()
+    plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+    buffer.seek(0)
+    image_base64 = base64.b64encode(buffer.read()).decode()
+    plt.close()
+    
+    return image_base64
+
+
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
 
 @app.route('/extract-comprehensive', methods=['POST'])
 def extract_comprehensive():
@@ -657,15 +850,198 @@ def api_read_template():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/generate-charts', methods=['POST'])
+def generate_charts():
+    """
+    Generate all chart images for PowerPoint placeholders
+    Returns base64-encoded PNG images
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        charts = {}
+        
+        # Extract energy data
+        energy_current = data.get('energy_current', {})
+        energy_target = data.get('energy_target', {})
+        components = data.get('components', {})
+        measure_packages = data.get('measure_packages', [])
+        
+        # Generate energy efficiency scale
+        try:
+            current_primary = float(energy_current.get('primary_demand_kwh_m2a', 290))
+            target_primary = float(energy_target.get('primary_demand_kwh_m2a', 27))
+            charts['img_energieklasse_ist'] = generate_energy_efficiency_scale(
+                current_primary, current_primary, 300
+            )
+            charts['img_energieklasse_ziel'] = generate_energy_efficiency_scale(
+                target_primary, target_primary, 300
+            )
+        except Exception as e:
+            print(f"Error generating efficiency scale: {e}")
+        
+        # Generate component energy loss charts
+        component_mapping = {
+            'aussenwand': 'img_energieverluste_aussenwand',
+            'dach': 'img_energieverluste_dach',
+            'fenster': 'img_energieverluste_fenster',
+            'keller': 'img_energieverluste_keller',
+            'heizung': 'img_energieverluste_heizung'
+        }
+        
+        for comp_key, img_key in component_mapping.items():
+            try:
+                # Mock data - you would calculate actual losses
+                loss_ist = 30  # percentage
+                loss_loesung = 5  # percentage
+                loss_pct = 25
+                
+                chart = generate_energy_loss_pie_chart(
+                    comp_key.capitalize(), 
+                    loss_ist, 
+                    loss_loesung, 
+                    loss_pct
+                )
+                charts[img_key] = chart
+            except Exception as e:
+                print(f"Error generating chart for {comp_key}: {e}")
+        
+        # Generate timeline chart
+        try:
+            timeline_chart = generate_timeline_chart(measure_packages)
+            if timeline_chart:
+                charts['img_sanierungsfahrplan'] = timeline_chart
+        except Exception as e:
+            print(f"Error generating timeline: {e}")
+        
+        # Generate cost comparison chart
+        try:
+            cost_chart = generate_cost_comparison_chart(measure_packages)
+            if cost_chart:
+                charts['img_kostenvergleich'] = cost_chart
+        except Exception as e:
+            print(f"Error generating cost chart: {e}")
+        
+        return jsonify({
+            'success': True,
+            'images': charts,
+            'count': len(charts)
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/generate', methods=['POST'])
 def generate_ppt():
     """
     Generate PowerPoint by filling template with mapped data
-    (This endpoint already exists, just included for completeness)
     """
-    # Implementation from previous version...
-    pass
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        template_base64 = data.get('template_file')
+        approved_data = data.get('approved_data')
+        
+        if not template_base64 or not approved_data:
+            return jsonify({'error': 'Missing template_file or approved_data'}), 400
+        
+        # Decode template
+        template_bytes = base64.b64decode(template_base64)
+        prs = Presentation(BytesIO(template_bytes))
+        
+        # Track replacements
+        replacements = {}
+        
+        # Replace text placeholders
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, 'text'):
+                    original_text = shape.text
+                    new_text = original_text
+                    
+                    for placeholder, value in approved_data.items():
+                        pattern = f'{{{{{placeholder}}}}}'
+                        if pattern in new_text:
+                            # Skip image placeholders in text replacement
+                            if not placeholder.startswith('img_'):
+                                new_text = new_text.replace(pattern, str(value))
+                                replacements[placeholder] = replacements.get(placeholder, 0) + 1
+                    
+                    if hasattr(shape, 'text_frame'):
+                        shape.text_frame.text = new_text
+                
+                # Handle tables
+                if shape.has_table:
+                    for row in shape.table.rows:
+                        for cell in row.cells:
+                            original_text = cell.text
+                            new_text = original_text
+                            
+                            for placeholder, value in approved_data.items():
+                                pattern = f'{{{{{placeholder}}}}}'
+                                if pattern in new_text:
+                                    if not placeholder.startswith('img_'):
+                                        new_text = new_text.replace(pattern, str(value))
+                                        replacements[placeholder] = replacements.get(placeholder, 0) + 1
+                            
+                            cell.text = new_text
+                
+                # Handle image placeholders
+                if hasattr(shape, 'text') and '{{img_' in shape.text:
+                    for placeholder, value in approved_data.items():
+                        if placeholder.startswith('img_') and f'{{{{{placeholder}}}}}' in shape.text:
+                            try:
+                                # Decode base64 image
+                                img_data = base64.b64decode(value)
+                                img_stream = BytesIO(img_data)
+                                
+                                # Replace with actual image
+                                left = shape.left
+                                top = shape.top
+                                width = shape.width
+                                height = shape.height
+                                
+                                # Remove the placeholder shape
+                                sp = shape.element
+                                sp.getparent().remove(sp)
+                                
+                                # Add the image
+                                slide.shapes.add_picture(img_stream, left, top, width, height)
+                                replacements[placeholder] = 1
+                            except Exception as e:
+                                print(f"Error replacing image {placeholder}: {e}")
+        
+        # Save to BytesIO
+        output = BytesIO()
+        prs.save(output)
+        output.seek(0)
+        
+        # Encode to base64
+        file_content = base64.b64encode(output.read()).decode()
+        file_size_mb = len(file_content) / 1024 / 1024
+        
+        return jsonify({
+            'success': True,
+            'filename': 'presentation_filled.pptx',
+            'file_content': file_content,
+            'file_size_mb': round(file_size_mb, 2),
+            'replacements': replacements
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
+
+# ============================================================================
+# RUN APP
+# ============================================================================
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)
