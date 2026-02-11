@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import zipfile
 import xml.etree.ElementTree as ET
 import os
@@ -329,27 +329,23 @@ def calculate_financial():
         
         if umsetzungshilfe_text:
             # Parse Maßnahmenpakete from Umsetzungshilfe
-            # Pattern: Investitionskosten¹   davon Sowieso-Kosten   Förderung²
-            #          69.900 €              64.900 €                9.980 €
-            
-            # Find all Maßnahmenpaket sections
             pakete_pattern = r'Maßnahmenpaket\s+(\d+).*?Investitionskosten.*?(\d{1,3}(?:\.\d{3})*)\s*€.*?(\d{1,3}(?:\.\d{3})*)\s*€.*?(\d{1,3}(?:\.\d{3})*)\s*€'
             pakete_matches = re.findall(pakete_pattern, umsetzungshilfe_text, re.DOTALL)
             
             # Component mapping for each Maßnahmenpaket
             paket_components = {
-                '1': ['dach'],                      # Maßnahmenpaket 1: Dachdämmung + PV-Anlage
-                '2': ['fenster', 'lueftung'],       # Maßnahmenpaket 2: Außentür, Fenster, Lüftung
-                '3': ['aussenwand'],                # Maßnahmenpaket 3: Außenwand
-                '4': ['keller'],                    # Maßnahmenpaket 4: Kellerwand, Kellerdämmung
-                '5': ['heizung', 'warmwasser']      # Maßnahmenpaket 5: Heizung, Warmwasser
+                '1': ['dach'],
+                '2': ['fenster', 'lueftung'],
+                '3': ['aussenwand'],
+                '4': ['keller'],
+                '5': ['heizung', 'warmwasser']
             }
             
-            # Known costs for sub-components (from PDF text)
+            # Known costs for sub-components
             known_costs = {
                 'lueftung': {
                     'investition': 19100,
-                    'instandhaltung': 17200,  # ~90% of investment
+                    'instandhaltung': 17200,
                     'foerderung': 3820
                 }
             }
@@ -363,7 +359,6 @@ def calculate_financial():
                 components = paket_components.get(paket_nr, [])
                 
                 if len(components) == 1:
-                    # Single component - assign all costs
                     comp = components[0]
                     financial_data[comp] = {
                         'investition': investition,
@@ -372,9 +367,7 @@ def calculate_financial():
                     }
                 
                 elif len(components) == 2:
-                    # Multiple components - need to split
                     if paket_nr == '2':
-                        # Fenster + Lüftung
                         lueft = known_costs['lueftung']
                         financial_data['lueftung'] = lueft.copy()
                         financial_data['fenster'] = {
@@ -384,7 +377,6 @@ def calculate_financial():
                         }
                     
                     elif paket_nr == '5':
-                        # Heizung + Warmwasser - split 50/50
                         financial_data['heizung'] = {
                             'investition': investition // 2,
                             'instandhaltung': instandhaltung // 2,
@@ -398,8 +390,6 @@ def calculate_financial():
         
         else:
             # Fallback: Use default cost estimates
-            energy_calc = data.get("energy_calculations", {})
-            
             COST_ESTIMATES = {
                 "aussenwand": {"investition": 76000, "instandhaltung": 66300, "foerderung": 15200},
                 "dach": {"investition": 69900, "instandhaltung": 64900, "foerderung": 9980},
@@ -427,161 +417,110 @@ def calculate_financial():
             "traceback": traceback.format_exc()
         }), 500
 
-# Generate PPT from template
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generate PPT from template  (accepts multipart/form-data)
+# ─────────────────────────────────────────────────────────────────────────────
 @app.route('/generate', methods=['POST'])
 def generate_ppt():
+    template_path = None
+    output_path = None
+
     try:
-        data = request.json
-        
-        if not data:
-            return jsonify({"error": "No JSON data provided"}), 400
-        
-        if 'template_file' not in data:
-            return jsonify({"error": "Missing template_file (base64)"}), 400
-        
-        if 'approved_data' not in data:
-            return jsonify({"error": "Missing approved_data"}), 400
-        
-        template_base64 = data['template_file']
-        approved_data = data['approved_data']
-        
-        # Decode base64 template
+        # ── 1. Receive the template file ──────────────────────────────────────
+        if 'template_file' not in request.files:
+            return jsonify({"error": "Missing template_file in multipart upload"}), 400
+
+        template_file = request.files['template_file']
+
+        # Save directly to disk – no base64 decode needed
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp:
+            template_file.save(tmp.name)
+            template_path = tmp.name
+
+        # ── 2. Receive approved_data (JSON string in form field) ──────────────
+        approved_data_str = request.form.get('approved_data', '{}')
         try:
-            template_content = base64.b64decode(template_base64)
-        except Exception as e:
-            return jsonify({"error": f"Invalid base64 template data: {str(e)}"}), 400
-        
-        # Save template to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_template:
-            tmp_template.write(template_content)
-            template_path = tmp_template.name
-        
-        # Load presentation
+            approved_data = json.loads(approved_data_str)
+        except json.JSONDecodeError as e:
+            return jsonify({"error": f"Invalid JSON in approved_data: {str(e)}"}), 400
+
+        if not approved_data:
+            return jsonify({"error": "approved_data is empty"}), 400
+
+        # ── 3. Load presentation ──────────────────────────────────────────────
         try:
             prs = Presentation(template_path)
         except Exception as e:
-            os.unlink(template_path)
             return jsonify({"error": f"Failed to load template: {str(e)}"}), 400
-        
-        # Track replacements
-        replacements_made = {
-            "text": 0,
-            "images": 0,
-            "skipped": []
-        }
-        
-        # Function to replace text in shape
+
+        # ── 4. Replace placeholders ───────────────────────────────────────────
+        replacements_made = {"text": 0, "images": 0, "skipped": []}
+
         def replace_text_in_shape(shape, placeholder, value):
             replaced = False
-            
             if shape.has_text_frame:
-                text_frame = shape.text_frame
-                for paragraph in text_frame.paragraphs:
+                for paragraph in shape.text_frame.paragraphs:
                     for run in paragraph.runs:
                         if placeholder in run.text:
                             run.text = run.text.replace(placeholder, str(value))
                             replaced = True
-            
-            if hasattr(shape, 'text') and placeholder in shape.text:
-                try:
-                    shape.text = shape.text.replace(placeholder, str(value))
-                    replaced = True
-                except:
-                    pass
-            
             return replaced
-        
-        # Function to replace image placeholder
+
         def replace_image_placeholder(slide, shape, placeholder, base64_image):
             try:
                 img_data = base64.b64decode(base64_image)
                 img_stream = BytesIO(img_data)
-                
-                left = shape.left
-                top = shape.top
-                width = shape.width
-                height = shape.height
-                
-                sp = shape.element
-                sp.getparent().remove(sp)
-                
+                left, top, width, height = shape.left, shape.top, shape.width, shape.height
+                shape.element.getparent().remove(shape.element)
                 slide.shapes.add_picture(img_stream, left, top, width, height)
-                
                 return True
             except Exception as e:
                 replacements_made["skipped"].append(f"{placeholder}: {str(e)}")
                 return False
-        
-        # Process all slides
+
         for slide_idx, slide in enumerate(prs.slides):
-            shapes_to_process = list(slide.shapes)
-            
-            for shape in shapes_to_process:
+            for shape in list(slide.shapes):
                 try:
-                    shape_text = ""
-                    if shape.has_text_frame:
-                        shape_text = shape.text_frame.text
-                    elif hasattr(shape, 'text'):
-                        shape_text = shape.text
-                    
+                    shape_text = shape.text_frame.text if shape.has_text_frame else getattr(shape, 'text', '')
                     shape_removed = False
-                    
-                    for placeholder_key, placeholder_value in approved_data.items():
+
+                    for key, value in approved_data.items():
                         if shape_removed:
                             break
-                        
-                        placeholder_patterns = [
-                            f"{{{{{placeholder_key}}}}}",
-                            f"{{{placeholder_key}}}",
-                            f"<<{placeholder_key}>>",
-                        ]
-                        
-                        for placeholder_pattern in placeholder_patterns:
-                            if placeholder_pattern in shape_text:
-                                if placeholder_key.startswith("img_"):
-                                    if isinstance(placeholder_value, str) and len(placeholder_value) > 100:
-                                        if replace_image_placeholder(slide, shape, placeholder_pattern, placeholder_value):
+
+                        # Support {{key}}, {key}, and <<key>> formats
+                        for pattern in [f"{{{{{key}}}}}", f"{{{key}}}", f"<<{key}>>"]:
+                            if pattern in shape_text:
+                                if key.startswith("img_"):
+                                    if isinstance(value, str) and len(value) > 100:
+                                        if replace_image_placeholder(slide, shape, pattern, value):
                                             replacements_made["images"] += 1
                                             shape_removed = True
-                                            break
                                     else:
-                                        replacements_made["skipped"].append(f"{placeholder_key}: Empty or invalid image data")
+                                        replacements_made["skipped"].append(f"{key}: empty/invalid image")
                                 else:
-                                    if replace_text_in_shape(shape, placeholder_pattern, placeholder_value):
+                                    if replace_text_in_shape(shape, pattern, value):
                                         replacements_made["text"] += 1
-                                
                                 break
-                
+
                 except Exception as e:
-                    replacements_made["skipped"].append(f"Shape error on slide {slide_idx}: {str(e)}")
+                    replacements_made["skipped"].append(f"Slide {slide_idx} shape error: {str(e)}")
                     continue
-        
-        # Save presentation
+
+        # ── 5. Save & return the file ─────────────────────────────────────────
         output_path = tempfile.mktemp(suffix='.pptx')
         prs.save(output_path)
-        
-        with open(output_path, 'rb') as f:
-            file_content = f.read()
-        
-        os.unlink(template_path)
-        os.unlink(output_path)
-        
-        file_base64 = base64.b64encode(file_content).decode('utf-8')
-        file_size = len(file_content)
-        file_size_mb = round(file_size / (1024 * 1024), 2)
-        
-        return jsonify({
-            "success": True,
-            "filename": f"Sanierungsfahrplan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx",
-            "file_content": file_base64,
-            "mimetype": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            "file_size_bytes": file_size,
-            "file_size_mb": file_size_mb,
-            "replacements": replacements_made,
-            "slides_processed": len(prs.slides),
-            "placeholders_received": len(approved_data)
-        })
-    
+
+        filename = f"Sanierungsfahrplan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx"
+
+        return send_file(
+            output_path,
+            mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            as_attachment=True,
+            download_name=filename
+        )
+
     except Exception as e:
         import traceback
         return jsonify({
@@ -589,6 +528,15 @@ def generate_ppt():
             "error": str(e),
             "traceback": traceback.format_exc()
         }), 500
+
+    finally:
+        # Clean up temp files (output_path cleaned after send_file completes)
+        if template_path and os.path.exists(template_path):
+            try:
+                os.unlink(template_path)
+            except Exception:
+                pass
+
 
 # Generate charts
 @app.route('/generate-charts', methods=['POST'])
