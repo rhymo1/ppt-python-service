@@ -1423,6 +1423,65 @@ def replace_image_in_shape(slide, shape, image_b64: str, stats: dict, placeholde
     except Exception as e:
         log.error(f'Image replacement failed for {placeholder}: {e}')
 
+import re
+
+BAR_PATTERN = re.compile(r'^bar_(red|green)_loss_(.+)_(ist|loesung)$')
+COLOR_BAR_RED = RGBColor(0xD4, 0x3B, 0x3B)
+COLOR_BAR_GREEN = RGBColor(0x4C, 0xAF, 0x50)
+
+
+def resize_bar_shapes(slide, text_mapping: dict, stats: dict):
+    """
+    Find bar shapes by text content (bar_red_*, bar_green_*),
+    resize width proportionally to kWh values, apply fill color, clear text.
+    """
+    bar_shapes = []
+    for shape in slide.shapes:
+        if not shape.has_text_frame:
+            continue
+        text = shape.text_frame.text.strip()
+        m = BAR_PATTERN.match(text)
+        if not m:
+            continue
+
+        color_type, component, value_type = m.groups()
+        placeholder_key = f'loss_{component}_kwh_{value_type}'
+        raw_val = text_mapping.get(placeholder_key, '')
+        kwh_value = float(str(raw_val).replace('.', '').replace(',', '.')) if raw_val else 0
+
+        bar_shapes.append({
+            'shape': shape,
+            'text': text,
+            'color_type': color_type,
+            'kwh': kwh_value,
+            'max_width': shape.width,
+        })
+
+    if not bar_shapes:
+        return
+
+    max_kwh = max(b['kwh'] for b in bar_shapes)
+    if max_kwh <= 0:
+        max_kwh = 1
+
+    max_bar_width = bar_shapes[0]['max_width']
+
+    for bar in bar_shapes:
+        shape = bar['shape']
+        kwh = bar['kwh']
+
+        ratio = max(kwh / max_kwh, 0.03) if kwh > 0 else 0.03
+        shape.width = int(max_bar_width * ratio)
+
+        fill_color = COLOR_BAR_RED if bar['color_type'] == 'red' else COLOR_BAR_GREEN
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = fill_color
+
+        for para in shape.text_frame.paragraphs:
+            for run in para.runs:
+                run.text = ''
+
+        stats[bar['text']] = 1
 
 def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: dict) -> tuple:
     """
@@ -1452,6 +1511,15 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
             # Table replacement (Bug #20)
             if shape.has_table:
                 replace_text_in_table(shape.table, text_mapping, stats)
+
+  for slide in prs.slides:
+        for shape in slide.shapes:
+            # Text replacement (Bug #19)
+            if shape.has_text_frame:
+
+  # Bar chart shape resizing
+    for slide in prs.slides:
+        resize_bar_shapes(slide, text_mapping, stats)            
 
   # Post-processing: highlight any remaining {{...}} placeholders in yellow
     from pptx.oxml.ns import qn as _qn
