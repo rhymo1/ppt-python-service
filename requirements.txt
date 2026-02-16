@@ -19,8 +19,8 @@ lxml>=4.9,<6.0
 matplotlib>=3.8,<4.0
 numpy>=1.24,<3.0
 
-PyMuPDF>=1.23.0
-numpy>=1.24.0
+# PDF image extraction (Priority 3: page rendering + auto-crop)
+PyMuPDF>=1.23,<2.0
 
 # OCR fallback (optional — install separately if needed)
 # pytesseract>=0.3.10,<1.0
