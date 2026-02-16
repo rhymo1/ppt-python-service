@@ -1512,16 +1512,11 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
             if shape.has_table:
                 replace_text_in_table(shape.table, text_mapping, stats)
 
-  for slide in prs.slides:
-        for shape in slide.shapes:
-            # Text replacement (Bug #19)
-            if shape.has_text_frame:
-
-  # Bar chart shape resizing
+    # Bar chart shape resizing
     for slide in prs.slides:
-        resize_bar_shapes(slide, text_mapping, stats)            
+        resize_bar_shapes(slide, text_mapping, stats)
 
-  # Post-processing: highlight any remaining {{...}} placeholders in yellow
+    # Post-processing: highlight any remaining {{...}} placeholders in yellow
     from pptx.oxml.ns import qn as _qn
     from lxml import etree
 
@@ -1533,7 +1528,6 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
                     if '{{' in full_text and '}}' in full_text:
                         for run in paragraph.runs:
                             if '{{' in run.text or '}}' in run.text:
-                                # Apply yellow highlight
                                 rPr = run._r.get_or_add_rPr()
                                 highlight = etree.SubElement(rPr, _qn('a:highlight'))
                                 srgb = etree.SubElement(highlight, _qn('a:srgbClr'))
@@ -1553,7 +1547,7 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
                                         srgb.set('val', 'FFFF00')
 
     log.info(f'  Post-processing: highlighted remaining unfilled placeholders')
-  
+
     output = BytesIO()
     prs.save(output)
     output.seek(0)
