@@ -320,6 +320,113 @@ def extract_all_data_from_pdf(pdf_bytes: bytes, label: str = 'pdf') -> dict:
     result['_log'] = elog.summary()
     return result
 
+import fitz  # PyMuPDF
+import numpy as np
+
+
+RENDER_DPI = 200
+
+
+def extract_images_from_pdf(pdf_bytes: bytes, pdf_type: str = 'sanierungsfahrplan') -> dict:
+    """
+    Extract relevant images from PDF by rendering pages and cropping regions.
+    Handles fully rasterized PDFs (each page = one image) via:
+      1. Rendering pages at high DPI
+      2. Auto-detecting photo regions via brightness analysis
+      3. Mapping to PPT placeholder keys
+    Returns dict of placeholder_key -> base64 PNG string.
+    """
+    images = {}
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+        page_count = len(doc)
+        log.info(f'  PDF image extraction ({pdf_type}): {page_count} pages')
+
+        if pdf_type == 'sanierungsfahrplan':
+
+            # --- Page 7: "Mein Sanierungsfahrplan" overview (landscape) ---
+            if page_count >= 7:
+                page = doc[6]
+                pix = page.get_pixmap(dpi=RENDER_DPI)
+                img = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
+                buf = BytesIO()
+                img.save(buf, format='PNG', optimize=True)
+                images['img_meinsanierungsfahrplan'] = base64.b64encode(buf.getvalue()).decode()
+                log.info(f'    ✓ img_meinsanierungsfahrplan ({pix.width}x{pix.height})')
+
+            # --- Page 1: Building photo (center of title page) ---
+            if page_count >= 1:
+                page = doc[0]
+                pix = page.get_pixmap(dpi=RENDER_DPI)
+                img = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
+                w, h = img.size
+                crop_box = (int(w * 0.36), int(h * 0.48), int(w * 0.72), int(h * 0.66))
+                building_img = img.crop(crop_box)
+                buf = BytesIO()
+                building_img.save(buf, format='PNG', optimize=True)
+                images['img_agendabild'] = base64.b64encode(buf.getvalue()).decode()
+                log.info(f'    ✓ img_agendabild ({building_img.size})')
+
+            # --- Page 3: "Ihr Haus heute – Bestand" with Schwachstellen photos ---
+            if page_count >= 3:
+                page = doc[2]
+                pix = page.get_pixmap(dpi=RENDER_DPI)
+                img = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
+                w, h = img.size
+                arr = np.array(img)
+
+                # Auto-detect photo regions in left column via brightness
+                strip = arr[:, 100:min(400, w // 3), :].mean(axis=(1, 2))
+                dark_mask = strip < 220
+                dark_rows = np.where(dark_mask)[0]
+
+                photo_regions = []
+                if len(dark_rows) > 0:
+                    diffs = np.diff(dark_rows)
+                    splits = np.where(diffs > 20)[0]
+                    start = dark_rows[0]
+                    for s in splits:
+                        end = dark_rows[s]
+                        if end - start > 80:
+                            photo_regions.append((start, end))
+                        start = dark_rows[s + 1]
+                    end = dark_rows[-1]
+                    if end - start > 80:
+                        photo_regions.append((start, end))
+
+                # Map detected regions to placeholders
+                # Typical order: Dach, Haustür/Fenster, Keller, Heizung
+                photo_mapping = [
+                    ('img_schwachstelle_1', 'img_dach_istzustand'),
+                    ('img_fenster_ist', None),
+                    ('img_keller_ist', None),
+                    ('img_schwachstelle_2', 'img_warmwasser_ist'),
+                ]
+
+                right_edge = min(int(w * 0.34), 650)
+                for i, (y_start, y_end) in enumerate(photo_regions):
+                    if i >= len(photo_mapping):
+                        break
+                    crop = img.crop((30, y_start, right_edge, y_end))
+                    buf = BytesIO()
+                    crop.save(buf, format='PNG', optimize=True)
+                    b64 = base64.b64encode(buf.getvalue()).decode()
+
+                    primary_key, secondary_key = photo_mapping[i]
+                    images[primary_key] = b64
+                    if secondary_key:
+                        images[secondary_key] = b64
+                    log.info(f'    ✓ {primary_key} (photo {i+1})')
+
+        doc.close()
+
+    except Exception as e:
+        log.error(f'  PDF image extraction failed: {e}')
+
+    log.info(f'  Extracted {len(images)} images from PDF')
+    return images
+  
 
 # ============================================================================
 # STRUCTURED DATA EXTRACTION (Bug #12, #13  —  rewritten patterns)
@@ -1698,8 +1805,13 @@ def api_extract_comprehensive():
         pdf2_data = extract_all_data_from_pdf(umsetzungshilfe_bytes, 'umsetzungshilfe') \
                     if umsetzungshilfe_bytes else {}
 
+        # Extract images from PDFs (page rendering + cropping)
+        pdf_images = {}
+        if sanierungsfahrplan_bytes:
+            pdf_images.update(extract_images_from_pdf(sanierungsfahrplan_bytes, 'sanierungsfahrplan'))
+
         # ── Phase 5: Structure ──
-        structured = structure_complete_data(sqproj_data, pdf1_data, pdf2_data)
+        structured = structure_complete_data(sqproj_data, pdf1_data, pdf2_data, pdf_images)
 
         # Cache
         cache_set(ck, structured)
