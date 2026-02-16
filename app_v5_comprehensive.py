@@ -1453,6 +1453,39 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
             if shape.has_table:
                 replace_text_in_table(shape.table, text_mapping, stats)
 
+  # Post-processing: highlight any remaining {{...}} placeholders in yellow
+    from pptx.oxml.ns import qn as _qn
+    from lxml import etree
+
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for paragraph in shape.text_frame.paragraphs:
+                    full_text = ''.join(run.text for run in paragraph.runs)
+                    if '{{' in full_text and '}}' in full_text:
+                        for run in paragraph.runs:
+                            if '{{' in run.text or '}}' in run.text:
+                                # Apply yellow highlight
+                                rPr = run._r.get_or_add_rPr()
+                                highlight = etree.SubElement(rPr, _qn('a:highlight'))
+                                srgb = etree.SubElement(highlight, _qn('a:srgbClr'))
+                                srgb.set('val', 'FFFF00')
+
+            if shape.has_table:
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        for paragraph in cell.text_frame.paragraphs:
+                            full_text = ''.join(run.text for run in paragraph.runs)
+                            if '{{' in full_text and '}}' in full_text:
+                                for run in paragraph.runs:
+                                    if '{{' in run.text or '}}' in run.text:
+                                        rPr = run._r.get_or_add_rPr()
+                                        highlight = etree.SubElement(rPr, _qn('a:highlight'))
+                                        srgb = etree.SubElement(highlight, _qn('a:srgbClr'))
+                                        srgb.set('val', 'FFFF00')
+
+    log.info(f'  Post-processing: highlighted remaining unfilled placeholders')
+  
     output = BytesIO()
     prs.save(output)
     output.seek(0)
