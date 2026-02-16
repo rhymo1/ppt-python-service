@@ -410,7 +410,7 @@ def extract_images_from_pdf(pdf_bytes: bytes, pdf_type: str = 'sanierungsfahrpla
                 # Map detected regions to placeholders
                 # Typical order: Dach, Haustür/Fenster, Keller, Heizung
                 photo_mapping = [
-                    ('img_schwachstelle_1', 'img_dach_istzustand'),
+                    ('img_schwachstelle_1', 'img_dach_ist'),
                     ('img_fenster_ist', None),
                     ('img_keller_ist', None),
                     ('img_schwachstelle_2', 'img_warmwasser_ist'),
