@@ -27,6 +27,7 @@ COPY app_v5_comprehensive.py ./app.py
 
 # Create cache directory
 RUN mkdir -p /tmp/isfp_cache
+RUN mkdir -p /tmp/isfp_templates
 
 # Expose port
 EXPOSE 5000
