@@ -1,8 +1,8 @@
 """
-Flask App v5.1  —  Complete Rewrite for iSFP PPT Generation
-Fixes all 22 bugs from the system review + adds OCR, logging, caching.
+Flask App v5.2  —  Complete iSFP PPT Generation Service
+Based on v5.1 + all Priority 1-3 fixes from the review session.
 
-Bug fixes addressed:
+Bug fixes addressed (original v5.1):
   #0  .sqproj parsed as SQLite (not ZIP/XML)
   #1  File upload field-name mismatch (iterate all keys)
   #6  /generate accepts multipart (template + JSON)
@@ -19,10 +19,17 @@ Bug fixes addressed:
   #19 Run-level text replacement preserving formatting
   #20 Table cell run-level replacement
   #21 Image replacement via blip (preserves z-order)
-  #22 Template typo {{loss_ fenster_kwh_loesung}} handled
+  #22 Template typo fixed (loss_fenster_kwh_loesung)
   +   OCR fallback via pytesseract
   +   Structured logging
   +   File-based caching
+
+v5.2 additions:
+  P1a  Yellow highlight for unfilled {{placeholders}}
+  P1b  Heizung loss values (loss_heizung_kwh_loesung, loss_heizung_pct)
+  P1c  Fenster typo fix at source (loss_fenster_kwh_loesung)
+  P2   Bar shape resizing (proportional red/green bars)
+  P3   PDF image extraction (page rendering + auto-crop)
 """
 
 import os
@@ -44,6 +51,7 @@ import pdfplumber
 from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
 from pptx.oxml.ns import qn
+from pptx.dml.color import RGBColor
 from PIL import Image
 from lxml import etree
 import matplotlib
@@ -51,6 +59,13 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
+
+# PyMuPDF for PDF image extraction (Priority 3)
+try:
+    import fitz
+    FITZ_AVAILABLE = True
+except ImportError:
+    FITZ_AVAILABLE = False
 
 # Optional OCR
 try:
@@ -131,8 +146,8 @@ def cache_set(key: str, data: dict):
 @app.route('/')
 def home():
     return jsonify({
-        'status': 'iSFP Data Extraction & PPT Generation Service v5.1',
-        'version': '5.1',
+        'status': 'iSFP Data Extraction & PPT Generation Service v5.2',
+        'version': '5.2',
         'endpoints': {
             '/health': 'GET  —  health check',
             '/extract-comprehensive': 'POST  —  extract all data from PDFs + .sqproj',
@@ -148,8 +163,9 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '5.1',
+        'version': '5.2',
         'ocr_available': OCR_AVAILABLE,
+        'fitz_available': FITZ_AVAILABLE,
     })
 
 
@@ -187,10 +203,9 @@ def extract_all_from_sqproj(sqproj_bytes: bytes) -> dict:
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tables = [row[0] for row in cursor.fetchall()]
         result['tables']['count'] = len(tables)
-        result['tables']['names'] = tables[:50]  # first 50 for reference
+        result['tables']['names'] = tables[:50]
         elog.ok('sqproj_tables', f'{len(tables)} tables found', 'sqproj')
 
-        # Helper to safely read a table
         def read_table(name, limit=100):
             try:
                 cursor.execute(f'SELECT * FROM "{name}" LIMIT {limit}')
@@ -200,39 +215,33 @@ def extract_all_from_sqproj(sqproj_bytes: bytes) -> dict:
             except Exception:
                 return [], []
 
-        # Extract building elements (geometry, areas)
         for tbl in tables:
             tbl_lower = tbl.lower()
 
-            # Building element tables (walls, roof, floor, windows)
             if any(k in tbl_lower for k in ['bauteil', 'wand', 'dach', 'decke', 'fenster', 'tuer', 'boden']):
                 cols, rows = read_table(tbl)
                 if rows:
                     result['geometry'][tbl] = rows
                     elog.ok(f'geometry.{tbl}', f'{len(rows)} rows', 'sqproj')
 
-            # Construction types / U-values
             if any(k in tbl_lower for k in ['konstruktion', 'aufbau', 'schicht', 'u_wert', 'uwert']):
                 cols, rows = read_table(tbl)
                 if rows:
                     result['construction_types'].append({'table': tbl, 'rows': rows})
                     elog.ok(f'construction.{tbl}', f'{len(rows)} rows', 'sqproj')
 
-            # Contact / address data
             if any(k in tbl_lower for k in ['kontakt', 'adresse', 'person', 'eigentuemer', 'berater']):
                 cols, rows = read_table(tbl)
                 if rows:
                     result['contacts'][tbl] = rows
                     elog.ok(f'contacts.{tbl}', f'{len(rows)} rows', 'sqproj')
 
-            # Climate / location
             if any(k in tbl_lower for k in ['klima', 'standort', 'wetter']):
                 cols, rows = read_table(tbl)
                 if rows:
                     result['climate'][tbl] = rows
                     elog.ok(f'climate.{tbl}', f'{len(rows)} rows', 'sqproj')
 
-        # Try to extract U-values from known patterns
         for tbl in tables:
             if 'u_wert' in tbl.lower() or 'uwert' in tbl.lower():
                 cols, rows = read_table(tbl)
@@ -282,7 +291,6 @@ def extract_all_data_from_pdf(pdf_bytes: bytes, label: str = 'pdf') -> dict:
                 page_num = i + 1
                 text = page.extract_text() or ''
 
-                # OCR fallback for pages with no text
                 if not text.strip() and OCR_AVAILABLE:
                     try:
                         img = page.to_image(resolution=300)
@@ -293,7 +301,6 @@ def extract_all_data_from_pdf(pdf_bytes: bytes, label: str = 'pdf') -> dict:
                     except Exception as e:
                         elog.miss(f'{label}_p{page_num}_ocr', str(e))
 
-                # Extract tables
                 page_tables = page.extract_tables() or []
 
                 result['pages'].append({
@@ -320,9 +327,10 @@ def extract_all_data_from_pdf(pdf_bytes: bytes, label: str = 'pdf') -> dict:
     result['_log'] = elog.summary()
     return result
 
-import fitz  # PyMuPDF
-import numpy as np
 
+# ============================================================================
+# PDF IMAGE EXTRACTION (Priority 3  —  page rendering + auto-crop)
+# ============================================================================
 
 RENDER_DPI = 200
 
@@ -337,6 +345,10 @@ def extract_images_from_pdf(pdf_bytes: bytes, pdf_type: str = 'sanierungsfahrpla
     Returns dict of placeholder_key -> base64 PNG string.
     """
     images = {}
+
+    if not FITZ_AVAILABLE:
+        log.warning('  PyMuPDF (fitz) not available — skipping PDF image extraction')
+        return images
 
     try:
         doc = fitz.open(stream=pdf_bytes, filetype='pdf')
@@ -417,7 +429,7 @@ def extract_images_from_pdf(pdf_bytes: bytes, pdf_type: str = 'sanierungsfahrpla
                     images[primary_key] = b64
                     if secondary_key:
                         images[secondary_key] = b64
-                    log.info(f'    ✓ {primary_key} (photo {i+1})')
+                    log.info(f'    ✓ {primary_key} (photo {i + 1})')
 
         doc.close()
 
@@ -426,7 +438,7 @@ def extract_images_from_pdf(pdf_bytes: bytes, pdf_type: str = 'sanierungsfahrpla
 
     log.info(f'  Extracted {len(images)} images from PDF')
     return images
-  
+
 
 # ============================================================================
 # STRUCTURED DATA EXTRACTION (Bug #12, #13  —  rewritten patterns)
@@ -443,14 +455,12 @@ def _search_number(pattern: str, text: str, group: int = 1) -> str:
     raw = _search(pattern, text, group)
     if not raw:
         return ''
-    # Keep as-is for display (German formatting)
     return raw
 
 
 def extract_building_info(text: str, elog: ExtractionLog) -> dict:
     info = {}
 
-    # Address  —  multi-line, look for street + PLZ
     m = re.search(r'Gebäudeadresse\s*\n?\s*(.+?)\n\s*(\d{5})\s+(\S+)', text)
     if m:
         info['street'] = m.group(1).strip()
@@ -459,7 +469,6 @@ def extract_building_info(text: str, elog: ExtractionLog) -> dict:
         info['address'] = f"{info['street']}, {info['plz']} {info['city']}"
         elog.ok('building.address', info['address'], 'pdf')
     else:
-        # Fallback: find PLZ pattern
         m2 = re.search(r'(\S+(?:str|Str|weg|Weg|gasse|platz|allee)\S*\s+\d+\S*)\s*\n?\s*(\d{5})\s+(\w+)', text)
         if m2:
             info['street'] = m2.group(1).strip()
@@ -470,7 +479,6 @@ def extract_building_info(text: str, elog: ExtractionLog) -> dict:
         else:
             elog.miss('building.address', 'No address pattern found')
 
-    # Owner
     m = re.search(r'(?:Sehr geehrte[r]?|Herr|Frau)\s+(Herr|Frau)\s+([A-Za-zÀ-ÿ\-]+)', text)
     if m:
         info['owner_salutation'] = m.group(1)
@@ -480,40 +488,33 @@ def extract_building_info(text: str, elog: ExtractionLog) -> dict:
     else:
         elog.miss('building.owner')
 
-    # Building type
     val = _search(r'Gebäudetyp\s+(\S+(?:\s+\S+)?)', text)
     if val:
         info['type'] = val
         elog.ok('building.type', val, 'pdf')
 
-    # Year
     val = _search(r'Baujahr\s+(\d{4})', text)
     if val:
         info['construction_year'] = val
         elog.ok('building.construction_year', val, 'pdf')
 
-    # Living area
     m = re.search(r'Wohnfläche\s+(?:ca\.?\s*)?([\d.,]+)\s*m', text)
     if m:
         info['living_area_m2'] = m.group(1).replace(',', '.')
         elog.ok('building.living_area', info['living_area_m2'], 'pdf')
 
-    # Floors
     val = _search(r'Vollgeschosse\s+(\d+)', text)
     if val:
         info['floors'] = val
 
-    # Basement
     val = _search(r'Keller\s+(ja\s*/?\s*\S+|nein)', text)
     if val:
         info['basement'] = val
 
-    # Heating year
     val = _search(r'Baujahr\s*\n?\s*Heizung\s+(\d{4})', text)
     if val:
         info['heating_year'] = val
 
-    # Heater type
     val = _search(r'Erzeuger\s+(.+?)(?:\n|$)', text)
     if val:
         info['heater_type'] = val
@@ -524,7 +525,6 @@ def extract_building_info(text: str, elog: ExtractionLog) -> dict:
 def extract_consultant_info(text: str, elog: ExtractionLog) -> dict:
     info = {}
 
-    # Try specific patterns for consultant name
     m = re.search(r'Energieberater[/in]*\s*\n\s*([A-Za-zÀ-ÿ\s\.\-]{3,50})\n', text)
     if not m:
         m = re.search(r'Ihr\s+Energieberater\s*:?\s*\n?\s*([A-Za-zÀ-ÿ\.\-]+(?:\s+[A-Za-zÀ-ÿ\.\-]+){1,3})', text)
@@ -555,43 +555,35 @@ def extract_energy_values(text: str, elog: ExtractionLog) -> dict:
     """Extract IST and ZIEL energy values."""
     result = {'ist': {}, 'ziel': {}}
 
-    # IST values  —  from the Fahrplan page (page 7 of Sanierungsfahrplan)
-    # Look for "Ihr Haus heute" section
     ist_section = text
     ziel_marker = text.find('Ihr Haus in Zukun')
     if ziel_marker > 0:
         ist_section = text[:ziel_marker]
 
-    # IST Primary energy
     m = re.search(r'Primärenergiebedarf\s*q\s*p?\s*\n?\s*([\d.,]+)\s*kWh/\(m²a\)', ist_section)
     if m:
         result['ist']['primary_demand'] = m.group(1).replace('.', '').replace(',', '.')
         elog.ok('energy.ist.primary', result['ist']['primary_demand'], 'pdf')
     else:
-        # Try with different spacing
         m2 = re.search(r'(\d{2,3})\s*kWh/\(m²a\)', ist_section)
         if m2:
             result['ist']['primary_demand'] = m2.group(1)
 
-    # IST End energy
     m = re.search(r'Endenergieverbrauch\s*\n?\s*([\d.,]+)\s*kWh/a', ist_section)
     if m:
         result['ist']['end_consumption'] = m.group(1).replace('.', '')
         elog.ok('energy.ist.end_consumption', result['ist']['end_consumption'], 'pdf')
 
-    # IST Energy costs
     m = re.search(r'Energiekosten[³\s]*\n?\s*([\d.,]+)\s*€/a', ist_section)
     if m:
         result['ist']['costs'] = m.group(1).replace('.', '')
         elog.ok('energy.ist.costs', result['ist']['costs'], 'pdf')
 
-    # IST CO2
     m = re.search(r'(?:äquivalente\s*)?CO\s*2?\s*-?\s*Emission(?:en)?\s*\n?\s*([\d.,]+)\s*kg/\(m²a\)', ist_section)
     if m:
         result['ist']['co2'] = m.group(1).replace(',', '.')
         elog.ok('energy.ist.co2', result['ist']['co2'], 'pdf')
 
-    # ZIEL values
     if ziel_marker > 0:
         ziel_section = text[ziel_marker:]
 
@@ -613,7 +605,6 @@ def extract_energy_values(text: str, elog: ExtractionLog) -> dict:
         if m:
             result['ziel']['co2'] = m.group(1).replace(',', '.')
 
-    # Efficiency standard
     m = re.search(r'(EH\s*\d+\s*EE)', text)
     if m:
         result['ziel']['efficiency_standard'] = m.group(1)
@@ -623,13 +614,9 @@ def extract_energy_values(text: str, elog: ExtractionLog) -> dict:
 
 
 def extract_u_values_table(text: str, tables: list, elog: ExtractionLog) -> list:
-    """
-    Extract U-value table from Umsetzungshilfe (page 34).
-    Bug #13: This was completely missing before.
-    """
+    """Extract U-value table from Umsetzungshilfe."""
     u_values = []
 
-    # Search tables for U-value data (columns: Bauteil, Fläche, U-IST, GEG, BEG, U-Ziel)
     for tbl_info in tables:
         tbl = tbl_info.get('data', [])
         if not tbl or len(tbl) < 2:
@@ -654,7 +641,6 @@ def extract_u_values_table(text: str, tables: list, elog: ExtractionLog) -> list
                     elog.ok(f'u_value.{entry["component"][:30]}',
                             f'A={entry["area_m2"]} U_ist={entry["u_ist"]} U_ziel={entry["u_ziel"]}', 'pdf_table')
 
-    # Fallback: regex extraction from text
     if not u_values:
         pattern = r'(Außenwand|Wand an Erdreich|Boden|Dach|Fenster|Außentür)[^\n]*?(\d+[.,]\d+)\s+m²\s+([\d,]+)\s+'
         for m in re.finditer(pattern, text):
@@ -669,10 +655,7 @@ def extract_u_values_table(text: str, tables: list, elog: ExtractionLog) -> list
 
 
 def extract_measure_packages(text: str, tables: list, elog: ExtractionLog) -> list:
-    """
-    Extract all 5 measure packages with costs, energy values, descriptions.
-    Bug #13: Now extracts from both PDFs including detailed cost table.
-    """
+    """Extract all 5 measure packages with costs, energy values, descriptions."""
     packages = []
 
     for i in range(1, 6):
@@ -691,24 +674,20 @@ def extract_measure_packages(text: str, tables: list, elog: ExtractionLog) -> li
             'funding_info': '',
         }
 
-        # Find package section in text
         pkg_pattern = rf'Maßnahmenpaket\s+{i}\s*\n(.*?)(?=Maßnahmenpaket\s+{i+1}|Ihr Haus in Zukun|Kostendarstellung|$)'
         m = re.search(pkg_pattern, text, re.DOTALL)
         if not m:
-            # Try simpler pattern
             pkg_pattern2 = rf'Maßnahmenpaket\s+{i}[^\n]*\n(.{{50,500}})'
             m = re.search(pkg_pattern2, text, re.DOTALL)
 
         if m:
             section = m.group(1)
 
-            # Name/measures  —  bullet points or component lines
             measure_lines = re.findall(r'[-•]\s*(.+?)(?:\n|$)', section)
             if measure_lines:
                 pkg['measures'] = [line.strip() for line in measure_lines if line.strip()]
                 pkg['name'] = ' + '.join(pkg['measures'][:3])
 
-            # Energy values after this package
             ep = re.search(r'Primärenergiebedarf\s*([\d.,]+)\s*kWh', section)
             if ep:
                 pkg['primary_demand_after'] = ep.group(1).replace(',', '.')
@@ -721,8 +700,6 @@ def extract_measure_packages(text: str, tables: list, elog: ExtractionLog) -> li
             if eco2:
                 pkg['co2_after'] = eco2.group(1).replace(',', '.')
 
-        # Extract costs from the cost table (Umsetzungshilfe page 35 or Fahrplanseite)
-        # Pattern: investment € / sowieso € / funding € / energy cost €/a
         cost_pattern = rf'Maßnahmenpaket\s+{i}\s+gesamt\s+([\d.,]+)\s*€?\s+([\d.,]+)\s*€?\s+([\d.,]+)\s*€?\s+([\d.,]+)'
         cm = re.search(cost_pattern, text)
         if cm:
@@ -732,7 +709,6 @@ def extract_measure_packages(text: str, tables: list, elog: ExtractionLog) -> li
             pkg['energy_cost_after'] = cm.group(4).replace('.', '').replace(',', '.')
             elog.ok(f'package_{i}_costs', f'inv={pkg["investment"]}', 'pdf')
 
-        # Also try Fahrplan page format:  69.900 €\n64.900 €\n9.980 €
         if not pkg['investment']:
             fp_pattern = rf'Maßnahmenpaket\s+{i}.*?(\d{{1,3}}(?:\.\d{{3}})*)\s*€.*?(\d{{1,3}}(?:\.\d{{3}})*)\s*€.*?(\d{{1,3}}(?:\.\d{{3}})*)\s*€'
             fm = re.search(fp_pattern, text, re.DOTALL)
@@ -742,7 +718,6 @@ def extract_measure_packages(text: str, tables: list, elog: ExtractionLog) -> li
                 pkg['funding'] = fm.group(3).replace('.', '')
                 elog.ok(f'package_{i}_costs', f'inv={pkg["investment"]}', 'pdf_fahrplan')
 
-        # Year
         ym = re.search(rf'(202[5-9])\s*\n\s*Maßnahmenpaket\s+{i}', text)
         if ym:
             pkg['year'] = ym.group(1)
@@ -751,7 +726,6 @@ def extract_measure_packages(text: str, tables: list, elog: ExtractionLog) -> li
             if ym2:
                 pkg['year'] = ym2.group(1)
 
-        # Funding info
         fi = re.search(rf'Maßnahmenpaket\s+{i}.*?(Gebäudehülle|Anlagen)[^\n]*Förderung[^\n]*', text, re.DOTALL)
         if fi:
             pkg['funding_info'] = fi.group(0).strip()[:200]
@@ -762,10 +736,7 @@ def extract_measure_packages(text: str, tables: list, elog: ExtractionLog) -> li
 
 
 def extract_cost_table(tables: list, elog: ExtractionLog) -> list:
-    """
-    Extract detailed cost breakdown from Umsetzungshilfe page 35.
-    Bug #13: This table has per-line-item costs.
-    """
+    """Extract detailed cost breakdown from Umsetzungshilfe."""
     cost_rows = []
     for tbl_info in tables:
         tbl = tbl_info.get('data', [])
@@ -793,13 +764,9 @@ def extract_cost_table(tables: list, elog: ExtractionLog) -> list:
 
 
 def extract_technical_data(text: str, elog: ExtractionLog) -> dict:
-    """
-    Extract from Umsetzungshilfe technical documentation pages.
-    Bug #13: JAZ, ETAs, WRG, system specs, Heizwärmebedarf per step.
-    """
+    """Extract from Umsetzungshilfe technical documentation pages."""
     tech = {}
 
-    # Heizwärmebedarf progression (from tech docs table)
     hw_pattern = r'Heizwärmebedarf.*?(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})'
     m = re.search(hw_pattern, text)
     if m:
@@ -808,7 +775,6 @@ def extract_technical_data(text: str, elog: ExtractionLog) -> dict:
         ]
         elog.ok('tech.heizwaermebedarf', tech['heizwaermebedarf_progression'], 'pdf')
 
-    # Specific values
     val = _search(r'JAZ\s*([\d,. ]+)', text)
     if val and val.replace(',', '.').replace(' ', ''):
         tech['jaz'] = val.strip().replace(',', '.')
@@ -825,21 +791,17 @@ def extract_technical_data(text: str, elog: ExtractionLog) -> dict:
     if val:
         tech['wrg_percent'] = val
 
-    # Heat pump type
     if re.search(r'Wärmepumpe\s+Lu', text):
         tech['heat_pump_type'] = 'Luft-Wasser'
 
-    # Transmission heat loss coefficients
     m = re.search(r"Transmissionswärmeverlust.*?H.*?(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})", text, re.DOTALL)
     if m:
         tech['h_t_progression'] = [m.group(i) for i in range(1, 7)]
 
-    # Ventilation loss coefficients
     m = re.search(r"Lüftungsverluste.*?H.*?(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})", text, re.DOTALL)
     if m:
         tech['h_v_progression'] = [m.group(i) for i in range(1, 7)]
 
-    # Wirtschaftlichkeit values
     m = re.search(r'Instandhaltung.*?([\d.,]+)\s*\n.*?Gesamtsanierung\s*ohne.*?([\d.,]+)\s*\n.*?Gesamtsanierung\s*mit.*?([\d.,]+)', text, re.DOTALL)
     if m:
         tech['annuity_maintenance'] = m.group(1).replace('.', '').replace(',', '.')
@@ -857,14 +819,12 @@ def extract_technical_data(text: str, elog: ExtractionLog) -> dict:
 def calculate_energy_losses(u_values: list, tech_data: dict, energy: dict) -> dict:
     """
     Calculate per-component energy losses in kWh for IST and ZIEL states.
-    Formula: Q = U × A × G_t, then scale to match known total Heizwärmebedarf.
-    G_t ≈ 66,000 Kh (approx for German climate zone).
+    Formula: Q = U × A × G_t.  G_t ≈ 66,000 Kh (German climate zone).
     """
-    HEATING_DEGREE_HOURS = 66000  # Kh  —  reasonable default for Germany
+    HEATING_DEGREE_HOURS = 66000
 
     losses = {}
 
-    # Parse U-values and areas
     component_map = {
         'dach': {'keywords': ['dach', 'Dach'], 'u_ist': 0, 'u_ziel': 0, 'area': 0},
         'aussenwand': {'keywords': ['außenwand', 'Außenwand'], 'u_ist': 0, 'u_ziel': 0, 'area': 0},
@@ -889,22 +849,17 @@ def calculate_energy_losses(u_values: list, tech_data: dict, energy: dict) -> di
         for key, cmap in component_map.items():
             if any(kw.lower() in comp_name for kw in cmap['keywords']):
                 cmap['area'] += area
-                # Use area-weighted average U-value
                 if cmap['u_ist'] == 0:
                     cmap['u_ist'] = u_ist
                     cmap['u_ziel'] = u_ziel
                 else:
-                    # Weighted average
                     old_area = cmap['area'] - area
                     cmap['u_ist'] = (cmap['u_ist'] * old_area + u_ist * area) / cmap['area'] if cmap['area'] > 0 else u_ist
                     cmap['u_ziel'] = (cmap['u_ziel'] * old_area + u_ziel * area) / cmap['area'] if cmap['area'] > 0 else u_ziel
                 break
 
-    # Calculate raw losses
-    raw_ist_total = 0
-    raw_ziel_total = 0
     for key, cmap in component_map.items():
-        q_ist = cmap['u_ist'] * cmap['area'] * HEATING_DEGREE_HOURS / 1000  # kWh
+        q_ist = cmap['u_ist'] * cmap['area'] * HEATING_DEGREE_HOURS / 1000
         q_ziel = cmap['u_ziel'] * cmap['area'] * HEATING_DEGREE_HOURS / 1000
         losses[key] = {
             'area': round(cmap['area'], 1),
@@ -913,17 +868,8 @@ def calculate_energy_losses(u_values: list, tech_data: dict, energy: dict) -> di
             'raw_kwh_ist': round(q_ist),
             'raw_kwh_ziel': round(q_ziel),
         }
-        raw_ist_total += q_ist
-        raw_ziel_total += q_ziel
 
-    # Scale to match known Heizwärmebedarf if available
-    known_ist = float(energy.get('ist', {}).get('primary_demand', 0) or 0)
-    scale_ist = 1.0
-    if raw_ist_total > 0 and known_ist > 0:
-        # Use living area to convert specific to total
-        pass  # Keep raw values; the kWh values on slides are absolute
-
-    # Lüftung and Heizung losses (estimated from technical data or as remainder)
+    # Lüftung and Heizung losses
     h_t = tech_data.get('h_t_progression', [])
     h_v = tech_data.get('h_v_progression', [])
     if h_t and h_v:
@@ -939,18 +885,17 @@ def calculate_energy_losses(u_values: list, tech_data: dict, energy: dict) -> di
 
     total_transmission_ist = sum(v['raw_kwh_ist'] for v in losses.values())
     estimated_lueftung_ist = total_transmission_ist * lueftung_share / (1 - lueftung_share) if lueftung_share < 1 else 5000
-    estimated_heizung_ist = total_transmission_ist * 0.12  # ~12% system losses
+    estimated_heizung_ist = total_transmission_ist * 0.12
 
     losses['lueftung'] = {
         'kwh_ist': round(estimated_lueftung_ist),
-        'kwh_ziel': round(estimated_lueftung_ist * 0.15),  # WRG reduces by ~85%
+        'kwh_ziel': round(estimated_lueftung_ist * 0.15),
     }
     losses['heizung'] = {
         'kwh_ist': round(estimated_heizung_ist),
-        'kwh_ziel': round(estimated_heizung_ist * 0.2),  # heat pump much more efficient
+        'kwh_ziel': round(estimated_heizung_ist * 0.2),
     }
 
-    # Calculate percentage reductions
     for key in ['dach', 'aussenwand', 'fenster', 'keller']:
         ist = losses[key]['raw_kwh_ist']
         ziel = losses[key]['raw_kwh_ziel']
@@ -966,22 +911,14 @@ def calculate_energy_losses(u_values: list, tech_data: dict, energy: dict) -> di
     return losses
 
 
-
-
 # ============================================================================
 # CONTENT-BASED PDF CLASSIFICATION (v5.1)
 # ============================================================================
 
 def classify_pdf_by_content(pdf_bytes: bytes) -> str:
-    """
-    Read first 3 pages of a PDF and determine if it's
-    'sanierungsfahrplan' or 'umsetzungshilfe'.
-
-    Returns: 'sanierungsfahrplan' | 'umsetzungshilfe' | 'unknown'
-    """
+    """Classify PDF as 'sanierungsfahrplan' or 'umsetzungshilfe'."""
     try:
         with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
-            # Check first 3 pages (enough to identify)
             sample_text = ''
             for page in pdf.pages[:3]:
                 text = page.extract_text() or ''
@@ -989,17 +926,15 @@ def classify_pdf_by_content(pdf_bytes: bytes) -> str:
 
             sample_lower = sample_text.lower()
 
-            # Umsetzungshilfe markers (check first – it's more specific)
             umsetzungshilfe_markers = [
                 'umsetzungshilfe',
                 'umsetzungshilfe für meine maßnahmen',
                 'maßnahmenübersicht',
-                'u-wert',       # U-value tables are in Umsetzungshilfe
+                'u-wert',
                 'bauteilübersicht',
             ]
             uh_score = sum(1 for m in umsetzungshilfe_markers if m in sample_lower)
 
-            # Sanierungsfahrplan markers
             sanierungsfahrplan_markers = [
                 'mein sanierungsfahrplan',
                 'sanierungsfahrplan',
@@ -1012,15 +947,11 @@ def classify_pdf_by_content(pdf_bytes: bytes) -> str:
 
             log.info(f'  PDF classification scores: sanierungsfahrplan={sf_score}, umsetzungshilfe={uh_score}')
 
-            # Both documents contain "Sanierungsfahrplan" somewhere,
-            # but only Umsetzungshilfe has the technical detail markers
             if uh_score >= 2:
                 return 'umsetzungshilfe'
             if sf_score >= 1:
                 return 'sanierungsfahrplan'
 
-            # Fallback: check page count (Umsetzungshilfe is typically 35-45 pages,
-            # Sanierungsfahrplan is typically 8-15 pages)
             if len(pdf.pages) > 25:
                 return 'umsetzungshilfe'
             elif len(pdf.pages) > 5:
@@ -1032,23 +963,22 @@ def classify_pdf_by_content(pdf_bytes: bytes) -> str:
         log.warning(f'  PDF classification failed: {e}')
         return 'unknown'
 
+
 # ============================================================================
 # MASTER DATA STRUCTURER
 # ============================================================================
 
-def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict) -> dict:
+def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict,
+                            pdf_images: dict = None) -> dict:
     """Merge all extracted data into unified structure."""
     elog = ExtractionLog()
 
-    # Combine text (no normalization  —  Bug #11)
     text1 = pdf1_data.get('full_text', '')
     text2 = pdf2_data.get('full_text', '')
     all_text = text1 + '\n\n' + text2
 
-    # Combine tables
     all_tables = pdf1_data.get('tables', []) + pdf2_data.get('tables', [])
 
-    # Extract all categories
     building = extract_building_info(all_text, elog)
     consultant = extract_consultant_info(all_text, elog)
     energy = extract_energy_values(all_text, elog)
@@ -1056,16 +986,13 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict)
     packages = extract_measure_packages(all_text, all_tables, elog)
     cost_table = extract_cost_table(all_tables, elog)
     tech_data = extract_technical_data(all_text, elog)
-
-    # Calculate energy losses (Bug #15)
     losses = calculate_energy_losses(u_values, tech_data, energy)
 
-    # Build direct placeholder mapping for simple values
+    # Build direct placeholder mapping
     placeholder_map = {
         'kunde_name': building.get('owner', ''),
         'praesentation_datum': datetime.now().strftime('%d.%m.%Y'),
 
-        # Costs per component (mapped from packages)
         'dach_investition': '',
         'dach_instandhaltung': '',
         'dach_foerderung': '',
@@ -1082,7 +1009,7 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict)
         'heizung_instandhaltung': '',
         'heizung_foerderung': '',
 
-        # Energy losses (Bug #15)
+        # Energy losses — P1c: fenster typo fixed, P1b: heizung added
         'loss_dach_kwh_ist': str(losses.get('dach', {}).get('kwh_ist', '')),
         'loss_dach_kwh_loesung': str(losses.get('dach', {}).get('kwh_ziel', '')),
         'loss_dach_pct': f"-{losses.get('dach', {}).get('reduction_pct', '')}%",
@@ -1102,31 +1029,23 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict)
         'loss_heizung_kwh_loesung': str(losses.get('heizung', {}).get('kwh_ziel', '')),
         'loss_heizung_pct': f"-{losses.get('heizung', {}).get('reduction_pct', '')}%",
 
-        # Schwachstellen  —  defaults, AI should refine
         'schwachstelle_1': 'Dach mit hohen U-Werten  —  hohe Wärmeverluste',
         'schwachstelle_2': 'Alte Gas-Heizung  —  hohe energetische Verluste',
     }
 
     # Map package costs to component placeholders
-    pkg_to_component = {
-        1: 'dach',
-        2: 'fenster',
-        3: 'aussenwand',
-        4: 'keller',
-        5: 'heizung',
-    }
+    pkg_to_component = {1: 'dach', 2: 'fenster', 3: 'aussenwand', 4: 'keller', 5: 'heizung'}
     for pkg in packages:
         comp = pkg_to_component.get(pkg['id'])
         if comp and pkg.get('investment'):
             inv = pkg['investment']
             sow = pkg.get('sowieso', '')
             fund = pkg.get('funding', '')
-            # Format as German currency
             placeholder_map[f'{comp}_investition'] = f"{int(float(inv)):,} €".replace(',', '.') if inv else ''
             placeholder_map[f'{comp}_instandhaltung'] = f"{int(float(sow)):,} €".replace(',', '.') if sow else ''
             placeholder_map[f'{comp}_foerderung'] = f"{int(float(fund)):,} €".replace(',', '.') if fund else ''
 
-    # Bug #14: Prepare Ausformulierung context for AI (n8n handles the actual AI call)
+    # Ausformulierung context for AI
     ausformulierung_context = {}
     components_for_ai = {
         'dach': {'ist_keywords': ['Dach', 'Dachdämmung'], 'loesung_keywords': ['ZSD', 'ASD', 'PV-Anlage']},
@@ -1136,7 +1055,6 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict)
         'warmwasser': {'ist_keywords': ['Warmwasser', 'Wärmeerzeuger'], 'loesung_keywords': ['Wärmepumpe', 'Pufferspeicher']},
     }
     for comp, kw in components_for_ai.items():
-        # Find relevant text sections
         ist_snippets = []
         loesung_snippets = []
         for keyword in kw['ist_keywords']:
@@ -1153,11 +1071,7 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict)
             'package_info': next((p for p in packages if pkg_to_component.get(p['id']) == comp), {}),
         }
 
-    # Build n8n-compatible response structure
-    # n8n expects: building_info, consultant_info, energy_ist, energy_ziel,
-    # cost_breakdown, measure_packages, u_values, technical_data, etc.
     structured = {
-        # n8n-compatible keys (v5.1)
         'building_info': building,
         'consultant_info': consultant,
         'energy_ist': {
@@ -1191,10 +1105,9 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict)
             'h_v': tech_data.get('h_v_progression', []),
         },
         'energy_losses': losses,
-        'charts_data': {
-            'energy_losses': losses,
-        },
+        'charts_data': {'energy_losses': losses},
         'placeholder_map': placeholder_map,
+        'pdf_images': pdf_images or {},
         'ausformulierung_context': ausformulierung_context,
         'schwachstellen': [
             {'nr': 1, 'titel': placeholder_map.get('schwachstelle_1', ''), 'beschreibung': placeholder_map.get('schwachstelle_1', '')},
@@ -1204,7 +1117,6 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict)
             'gebaeudehulle': '15% Standard + 5% iSFP-Bonus über BAFA BEG EM',
             'heizung': '30% Standard + weitere Förderungen über KfW Nr. 458',
         },
-        # Legacy keys for backward compatibility
         'energy': energy,
         'cost_table': cost_table,
         'sqproj_summary': {
@@ -1233,21 +1145,14 @@ def _fig_to_base64(fig) -> str:
 
 
 def generate_energy_class_chart(primary_demand: float, label: str = 'IST') -> str:
-    """
-    Generate energy efficiency class scale (A+ to H) with position marker.
-    Bug #18: This was missing entirely.
-    """
+    """Generate energy efficiency class scale (A+ to H) with position marker."""
     fig, ax = plt.subplots(figsize=(10, 2.5))
 
     classes = [
-        ('A+', 0, 30, '#00734A'),
-        ('A', 30, 50, '#4BA946'),
-        ('B', 50, 75, '#B2D235'),
-        ('C', 75, 100, '#EDE63A'),
-        ('D', 100, 130, '#ECC531'),
-        ('E', 130, 160, '#E89E30'),
-        ('F', 160, 200, '#E16E2E'),
-        ('G', 200, 250, '#D23C2C'),
+        ('A+', 0, 30, '#00734A'), ('A', 30, 50, '#4BA946'),
+        ('B', 50, 75, '#B2D235'), ('C', 75, 100, '#EDE63A'),
+        ('D', 100, 130, '#ECC531'), ('E', 130, 160, '#E89E30'),
+        ('F', 160, 200, '#E16E2E'), ('G', 200, 250, '#D23C2C'),
         ('H', 250, 350, '#B5232A'),
     ]
 
@@ -1257,7 +1162,6 @@ def generate_energy_class_chart(primary_demand: float, label: str = 'IST') -> st
         ax.text(start + width / 2, 0, cls_label, ha='center', va='center',
                 fontsize=10, fontweight='bold', color='white')
 
-    # Position marker
     marker_x = min(primary_demand, 340)
     ax.annotate(f'{int(primary_demand)} kWh/(m²a)',
                 xy=(marker_x, -0.3), xytext=(marker_x, -0.8),
@@ -1279,25 +1183,19 @@ def generate_energy_class_chart(primary_demand: float, label: str = 'IST') -> st
 
 
 def generate_component_loss_chart(component: str, kwh_ist: float, kwh_ziel: float, reduction_pct: float) -> str:
-    """
-    Generate before/after energy loss comparison for a single component.
-    For slides 13, 20, 24, 28, 33 ({{img_energieverluste_*}}).
-    """
+    """Generate before/after energy loss comparison for a single component."""
     fig, ax = plt.subplots(figsize=(8, 4))
 
     labels = ['Ist-Zustand', 'Nach Sanierung']
     values = [kwh_ist, kwh_ziel]
     colors = ['#D23C2C', '#4BA946']
-
     bars = ax.bar(labels, values, color=colors, width=0.5, edgecolor='white')
 
-    # Value labels
     for bar, val in zip(bars, values):
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(values) * 0.02,
                 f'{int(val):,} kWh'.replace(',', '.'), ha='center', va='bottom',
                 fontsize=11, fontweight='bold')
 
-    # Reduction arrow
     if kwh_ist > 0 and kwh_ziel < kwh_ist:
         ax.annotate(f'-{int(reduction_pct)}%',
                     xy=(1, kwh_ziel), xytext=(0.5, (kwh_ist + kwh_ziel) / 2),
@@ -1323,7 +1221,7 @@ def generate_component_loss_chart(component: str, kwh_ist: float, kwh_ziel: floa
 
 
 def generate_endenergie_chart(ist: float, ziel: float) -> str:
-    """Bug #18: Endenergiebedarf comparison chart."""
+    """Endenergiebedarf comparison chart."""
     fig, ax = plt.subplots(figsize=(8, 4))
     labels = ['Ist-Zustand', 'Nach Sanierung']
     values = [ist, ziel]
@@ -1342,7 +1240,7 @@ def generate_endenergie_chart(ist: float, ziel: float) -> str:
 
 
 def generate_brennstoffkosten_chart(ist: float, ziel: float) -> str:
-    """Bug #18: Brennstoffkosten comparison chart."""
+    """Brennstoffkosten comparison chart."""
     fig, ax = plt.subplots(figsize=(8, 4))
     labels = ['Ist-Zustand', 'Nach Sanierung']
     values = [ist, ziel]
@@ -1361,12 +1259,11 @@ def generate_brennstoffkosten_chart(ist: float, ziel: float) -> str:
 
 
 def generate_all_charts(data: dict) -> dict:
-    """Generate all chart images from extracted data. Bug #16: uses real values."""
+    """Generate all chart images from extracted data."""
     charts = {}
     energy = data.get('energy', {})
     losses = data.get('energy_losses', {})
 
-    # Energy class charts (Bug #18)
     try:
         ist_primary = float(energy.get('ist', {}).get('primary_demand', 290))
         charts['img_energieklasse_ist'] = generate_energy_class_chart(ist_primary, 'Ist-Zustand')
@@ -1379,7 +1276,6 @@ def generate_all_charts(data: dict) -> dict:
     except Exception as e:
         log.error(f'Chart generation failed (energieklasse_ziel): {e}')
 
-    # Per-component loss charts (Bug #16: real data instead of mock)
     for comp in ['dach', 'aussenwand', 'fenster', 'keller', 'heizung']:
         try:
             comp_data = losses.get(comp, {})
@@ -1392,7 +1288,6 @@ def generate_all_charts(data: dict) -> dict:
         except Exception as e:
             log.error(f'Chart generation failed (energieverluste_{comp}): {e}')
 
-    # Endenergie chart (Bug #18)
     try:
         ist_end = float(energy.get('ist', {}).get('end_consumption', 101500))
         ziel_end = float(energy.get('ziel', {}).get('end_consumption', 7550))
@@ -1400,7 +1295,6 @@ def generate_all_charts(data: dict) -> dict:
     except Exception as e:
         log.error(f'Chart generation failed (endenergiebedarf): {e}')
 
-    # Brennstoffkosten chart (Bug #18)
     try:
         ist_cost = float(energy.get('ist', {}).get('costs', 6600))
         ziel_cost = float(energy.get('ziel', {}).get('costs', 1500))
@@ -1413,32 +1307,24 @@ def generate_all_charts(data: dict) -> dict:
 
 
 # ============================================================================
-# PPT GENERATION (Bug #19, #20, #21, #22)
+# PPT GENERATION (Bug #19, #20, #21, #22 + Priority 1a, 2)
 # ============================================================================
 
 def replace_text_in_runs(shape, mapping: dict, stats: dict):
-    """
-    Bug #19: Replace placeholders at the RUN level, preserving all formatting.
-    Bug #22: Handles template typo {{loss_ fenster_kwh_loesung}} via exact matching.
-    """
+    """Bug #19: Replace placeholders at the RUN level, preserving all formatting."""
     if not shape.has_text_frame:
         return
 
     for paragraph in shape.text_frame.paragraphs:
-        # First check if the full paragraph text contains any placeholder
         full_para_text = ''.join(run.text for run in paragraph.runs)
-        has_placeholder = '{{' in full_para_text
-
-        if not has_placeholder:
+        if '{{' not in full_para_text:
             continue
 
-        # Check if placeholder spans multiple runs  —  if so, merge and re-split
         for placeholder, value in mapping.items():
             pattern = '{{' + placeholder + '}}'
             if pattern not in full_para_text:
                 continue
 
-            # Simple case: placeholder is entirely within one run
             found_in_single = False
             for run in paragraph.runs:
                 if pattern in run.text:
@@ -1446,9 +1332,7 @@ def replace_text_in_runs(shape, mapping: dict, stats: dict):
                     stats[placeholder] = stats.get(placeholder, 0) + 1
                     found_in_single = True
 
-            # Complex case: placeholder spans multiple runs
             if not found_in_single and pattern in full_para_text:
-                # Reconstruct: put all text in first run, clear others
                 if paragraph.runs:
                     combined = ''.join(r.text for r in paragraph.runs)
                     combined = combined.replace(pattern, str(value))
@@ -1490,48 +1374,39 @@ def replace_text_in_table(table, mapping: dict, stats: dict):
 
 
 def replace_image_in_shape(slide, shape, image_b64: str, stats: dict, placeholder: str):
-    """
-    Bug #21: Replace image via blipFill to preserve z-order and cropping.
-    Falls back to remove+add if blip approach fails.
-    """
+    """Bug #21: Replace image via blipFill to preserve z-order and cropping."""
     try:
         img_data = base64.b64decode(image_b64)
         img_stream = BytesIO(img_data)
 
-        # Try blip replacement first (preserves z-order)
         sp_element = shape.element
         blip_fills = sp_element.findall('.//' + qn('a:blip'))
 
         if blip_fills:
-            # Replace the image data in the existing relationship
-            from pptx.opc.constants import RELATIONSHIP_TYPE as RT
             slide_part = slide.part
             image_part, rId = slide_part.get_or_add_image_part(img_stream)
             blip_fills[0].set(qn('r:embed'), rId)
             stats[placeholder] = 1
             return
 
-        # Fallback: remove text, add picture at same position
         left = shape.left
         top = shape.top
         width = shape.width
         height = shape.height
 
-        # Clear the placeholder text
         if shape.has_text_frame:
             for para in shape.text_frame.paragraphs:
                 for run in para.runs:
                     run.text = ''
 
-        # Add picture on top
         slide.shapes.add_picture(img_stream, left, top, width, height)
         stats[placeholder] = 1
 
     except Exception as e:
         log.error(f'Image replacement failed for {placeholder}: {e}')
 
-import re
 
+# Priority 2: Bar shape resizing
 BAR_PATTERN = re.compile(r'^bar_(red|green)_loss_(.+)_(ist|loesung)$')
 COLOR_BAR_RED = RGBColor(0xD4, 0x3B, 0x3B)
 COLOR_BAR_GREEN = RGBColor(0x4C, 0xAF, 0x50)
@@ -1539,7 +1414,7 @@ COLOR_BAR_GREEN = RGBColor(0x4C, 0xAF, 0x50)
 
 def resize_bar_shapes(slide, text_mapping: dict, stats: dict):
     """
-    Find bar shapes by text content (bar_red_*, bar_green_*),
+    Priority 2: Find bar shapes by text content (bar_red_*, bar_green_*),
     resize width proportionally to kWh values, apply fill color, clear text.
     """
     bar_shapes = []
@@ -1590,19 +1465,21 @@ def resize_bar_shapes(slide, text_mapping: dict, stats: dict):
 
         stats[bar['text']] = 1
 
+
 def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: dict) -> tuple:
     """
     Fill the template. Returns (pptx_bytes, stats_dict).
-    Bugs #19, #20, #21, #22 all addressed here.
+    Pass 1: Text + image replacement
+    Pass 2: Bar shape resizing (Priority 2)
+    Pass 3: Yellow highlight for unfilled placeholders (Priority 1a)
     """
     prs = Presentation(BytesIO(template_bytes))
     stats = {}
 
+    # Pass 1: Text and image replacement
     for slide in prs.slides:
         for shape in slide.shapes:
-            # Text replacement (Bug #19)
             if shape.has_text_frame:
-                # Check for image placeholders in text (they're in AutoShapes)
                 full_text = shape.text
                 img_replaced = False
                 for img_key, img_b64 in image_mapping.items():
@@ -1615,18 +1492,14 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
                 if not img_replaced:
                     replace_text_in_runs(shape, text_mapping, stats)
 
-            # Table replacement (Bug #20)
             if shape.has_table:
                 replace_text_in_table(shape.table, text_mapping, stats)
 
-    # Bar chart shape resizing
+    # Pass 2: Bar chart shape resizing (Priority 2)
     for slide in prs.slides:
         resize_bar_shapes(slide, text_mapping, stats)
 
-    # Post-processing: highlight any remaining {{...}} placeholders in yellow
-    from pptx.oxml.ns import qn as _qn
-    from lxml import etree
-
+    # Pass 3: Highlight remaining unfilled {{...}} placeholders in yellow (Priority 1a)
     for slide in prs.slides:
         for shape in slide.shapes:
             if shape.has_text_frame:
@@ -1636,8 +1509,8 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
                         for run in paragraph.runs:
                             if '{{' in run.text or '}}' in run.text:
                                 rPr = run._r.get_or_add_rPr()
-                                highlight = etree.SubElement(rPr, _qn('a:highlight'))
-                                srgb = etree.SubElement(highlight, _qn('a:srgbClr'))
+                                highlight = etree.SubElement(rPr, qn('a:highlight'))
+                                srgb = etree.SubElement(highlight, qn('a:srgbClr'))
                                 srgb.set('val', 'FFFF00')
 
             if shape.has_table:
@@ -1649,8 +1522,8 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
                                 for run in paragraph.runs:
                                     if '{{' in run.text or '}}' in run.text:
                                         rPr = run._r.get_or_add_rPr()
-                                        highlight = etree.SubElement(rPr, _qn('a:highlight'))
-                                        srgb = etree.SubElement(highlight, _qn('a:srgbClr'))
+                                        highlight = etree.SubElement(rPr, qn('a:highlight'))
+                                        srgb = etree.SubElement(highlight, qn('a:srgbClr'))
                                         srgb.set('val', 'FFFF00')
 
     log.info(f'  Post-processing: highlighted remaining unfilled placeholders')
@@ -1669,8 +1542,6 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
 def api_extract_comprehensive():
     """
     Extract ALL data from uploaded files.
-    v5.1: Intelligent file detection – handles random order, random field names,
-    and partial uploads (1 file, 2 files, or all 3).
     5-phase pipeline: collect → classify → cache → extract → structure.
     """
     start = time.time()
@@ -1688,7 +1559,7 @@ def api_extract_comprehensive():
         log.info(f'Received {len(all_files)} files: {[(f[0], f[1].filename) for f in all_files]}')
 
         # ── Phase 2: Classify by extension + magic bytes ──
-        pdfs = []          # list of (content_bytes, original_filename)
+        pdfs = []
         sqproj = None
         pptx_template = None
 
@@ -1710,7 +1581,6 @@ def api_extract_comprehensive():
                 pdfs.append((content_bytes, f.filename or field_name))
                 log.info(f'  → pdf (by extension): {f.filename} ({len(content_bytes):,} bytes)')
             else:
-                # Magic bytes fallback
                 if content_bytes[:15] == b'SQLite format 3':
                     sqproj = content_bytes
                     log.info(f'  → sqproj (magic bytes): {f.filename}')
@@ -1752,7 +1622,6 @@ def api_extract_comprehensive():
                 sanierungsfahrplan_bytes = pdfs[0][0]
                 umsetzungshilfe_bytes = pdfs[1][0]
             else:
-                # Ambiguous – use page count heuristic (longer = Umsetzungshilfe)
                 try:
                     pages_a = len(pdfplumber.open(BytesIO(pdfs[0][0])).pages)
                     pages_b = len(pdfplumber.open(BytesIO(pdfs[1][0])).pages)
@@ -1769,14 +1638,12 @@ def api_extract_comprehensive():
                     log.info('  Ambiguous – defaulted to upload order')
 
         elif len(pdfs) > 2:
-            # More than 2 PDFs – classify all, pick best matches
             roles = [(p[0], p[1], classify_pdf_by_content(p[0])) for p in pdfs]
             for content_b, fname, role in roles:
                 if role == 'umsetzungshilfe' and not umsetzungshilfe_bytes:
                     umsetzungshilfe_bytes = content_b
                 elif role == 'sanierungsfahrplan' and not sanierungsfahrplan_bytes:
                     sanierungsfahrplan_bytes = content_b
-            # Fill remaining slots
             for content_b, fname, role in roles:
                 if content_b is not sanierungsfahrplan_bytes and content_b is not umsetzungshilfe_bytes:
                     if not sanierungsfahrplan_bytes:
@@ -1805,7 +1672,7 @@ def api_extract_comprehensive():
         pdf2_data = extract_all_data_from_pdf(umsetzungshilfe_bytes, 'umsetzungshilfe') \
                     if umsetzungshilfe_bytes else {}
 
-        # Extract images from PDFs (page rendering + cropping)
+        # Extract images from PDFs (Priority 3: page rendering + cropping)
         pdf_images = {}
         if sanierungsfahrplan_bytes:
             pdf_images.update(extract_images_from_pdf(sanierungsfahrplan_bytes, 'sanierungsfahrplan'))
@@ -1813,8 +1680,9 @@ def api_extract_comprehensive():
         # ── Phase 5: Structure ──
         structured = structure_complete_data(sqproj_data, pdf1_data, pdf2_data, pdf_images)
 
-        # Cache
-        cache_set(ck, structured)
+        # Cache (note: pdf_images are large base64 strings, skip them in cache)
+        cache_data = {k: v for k, v in structured.items() if k != 'pdf_images'}
+        cache_set(ck, cache_data)
 
         duration = round(time.time() - start, 2)
         log.info(f'=== /extract-comprehensive END ({duration}s) ===')
@@ -1835,6 +1703,7 @@ def api_extract_comprehensive():
                 'pdf2_pages': pdf2_data.get('metadata', {}).get('page_count', 0) if pdf2_data else 0,
                 'placeholders_mapped': len([v for v in structured.get('placeholder_map', {}).values() if v]),
                 'charts_preparable': len(structured.get('energy_losses', {})),
+                'pdf_images_extracted': len(pdf_images),
                 'files_received': len(all_files),
                 'files_classified': sum(1 for v in files_detected.values() if v),
             },
@@ -1850,7 +1719,6 @@ def api_extract_comprehensive():
 def api_read_template():
     """Read all {{placeholders}} from .pptx template."""
     try:
-        # Accept file from any field name (Bug #1 pattern)
         template_file = None
         for key in request.files:
             template_file = request.files[key]
@@ -1862,7 +1730,7 @@ def api_read_template():
         template_bytes = template_file.read()
         prs = Presentation(BytesIO(template_bytes))
         placeholders = set()
-        slide_map = {}  # which slide has which placeholders
+        slide_map = {}
 
         for i, slide in enumerate(prs.slides):
             slide_placeholders = set()
@@ -1881,7 +1749,7 @@ def api_read_template():
                     slide_placeholders.add(f)
 
             if slide_placeholders:
-                slide_map[f'slide_{i+1}'] = sorted(list(slide_placeholders))
+                slide_map[f'slide_{i + 1}'] = sorted(list(slide_placeholders))
 
         return jsonify({
             'success': True,
@@ -1924,11 +1792,9 @@ def api_generate_ppt():
     Bug #7: Returns binary .pptx file directly.
     """
     try:
-        # Accept multipart: template as file, data as form field
         template_bytes = None
         approved_data = None
 
-        # Get template file
         for key in request.files:
             f = request.files[key]
             fname = (f.filename or key or '').lower()
@@ -1936,7 +1802,6 @@ def api_generate_ppt():
                 template_bytes = f.read()
                 break
 
-        # Get data (from form field or JSON body)
         if request.form.get('data'):
             approved_data = json.loads(request.form['data'])
         elif request.form.get('approved_data'):
@@ -1955,7 +1820,6 @@ def api_generate_ppt():
 
         log.info(f'Generating PPT with {len(approved_data)} data fields')
 
-        # Separate text and image mappings
         text_mapping = {}
         image_mapping = {}
         for key, value in approved_data.items():
@@ -1966,12 +1830,10 @@ def api_generate_ppt():
 
         log.info(f'  Text fields: {len(text_mapping)}, Image fields: {len(image_mapping)}')
 
-        # Fill presentation
         pptx_bytes, stats = fill_presentation(template_bytes, text_mapping, image_mapping)
 
         log.info(f'  Replacements made: {sum(stats.values())} across {len(stats)} placeholders')
 
-        # Bug #7: Return binary file directly
         output = BytesIO(pptx_bytes)
         output.seek(0)
 
@@ -1987,7 +1849,6 @@ def api_generate_ppt():
         return jsonify({'error': str(e)}), 500
 
 
-# Also support JSON response format for backward compatibility
 @app.route('/generate-json', methods=['POST'])
 def api_generate_ppt_json():
     """Same as /generate but returns base64-encoded file in JSON (backward compat)."""
@@ -2029,5 +1890,5 @@ def api_generate_ppt_json():
 # ============================================================================
 
 if __name__ == '__main__':
-    log.info('Starting iSFP PPT Service v5.1')
+    log.info('Starting iSFP PPT Service v5.2')
     app.run(host='0.0.0.0', port=5000, debug=False)
