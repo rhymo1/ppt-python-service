@@ -983,7 +983,7 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict)
         'loss_AW_kwh_loesung': str(losses.get('aussenwand', {}).get('kwh_ziel', '')),
         'loss_AW_pct': f"-{losses.get('aussenwand', {}).get('reduction_pct', '')}%",
         'loss_fenster_kwh_ist': str(losses.get('fenster', {}).get('kwh_ist', '')),
-        'loss_ fenster_kwh_loesung': str(losses.get('fenster', {}).get('kwh_ziel', '')),  # Bug #22: typo
+        'loss_fenster_kwh_loesung': str(losses.get('fenster', {}).get('kwh_ziel', '')),
         'loss_fenster_pct': f"-{losses.get('fenster', {}).get('reduction_pct', '')}%",
         'loss_keller_kwh_ist': str(losses.get('keller', {}).get('kwh_ist', '')),
         'loss_keller_kwh_loesung': str(losses.get('keller', {}).get('kwh_ziel', '')),
@@ -992,6 +992,8 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict)
         'loss_lueftung_kwh_loesung': str(losses.get('lueftung', {}).get('kwh_ziel', '')),
         'loss_lueftung_pct': f"-{losses.get('lueftung', {}).get('reduction_pct', '')}%",
         'loss_heizung_kwh_ist': str(losses.get('heizung', {}).get('kwh_ist', '')),
+        'loss_heizung_kwh_loesung': str(losses.get('heizung', {}).get('kwh_ziel', '')),
+        'loss_heizung_pct': f"-{losses.get('heizung', {}).get('reduction_pct', '')}%",
 
         # Schwachstellen  —  defaults, AI should refine
         'schwachstelle_1': 'Dach mit hohen U-Werten  —  hohe Wärmeverluste',
