@@ -1381,21 +1381,67 @@ def replace_text_in_table(table, mapping: dict, stats: dict):
 
 
 def replace_image_in_shape(slide, shape, image_b64: str, stats: dict, placeholder: str):
-    """Bug #21: Replace image via blipFill to preserve z-order and cropping."""
+    """
+    Replace image via blipFill to preserve z-order.
+    Images fill shape fully (cover mode): scale to fill, center-crop, lock aspect ratio.
+    """
     try:
         img_data = base64.b64decode(image_b64)
-        img_stream = BytesIO(img_data)
+
+        # Open image to get dimensions for cover-crop
+        pil_img = Image.open(BytesIO(img_data))
+        img_w, img_h = pil_img.size
+
+        # Shape dimensions (EMU)
+        shape_w = shape.width
+        shape_h = shape.height
+
+        # Cover crop: scale so shortest side fills shape, then center-crop
+        shape_ratio = shape_w / shape_h if shape_h > 0 else 1.0
+        img_ratio = img_w / img_h if img_h > 0 else 1.0
+
+        if img_ratio > shape_ratio:
+            # Image is wider → match height, crop sides
+            new_h = img_h
+            new_w = int(img_h * shape_ratio)
+            left = (img_w - new_w) // 2
+            crop_box = (left, 0, left + new_w, new_h)
+        else:
+            # Image is taller → match width, crop top/bottom
+            new_w = img_w
+            new_h = int(img_w / shape_ratio)
+            top = (img_h - new_h) // 2
+            crop_box = (0, top, new_w, top + new_h)
+
+        cropped = pil_img.crop(crop_box)
+        buf = BytesIO()
+        fmt = 'PNG' if pil_img.mode == 'RGBA' else 'JPEG'
+        save_kwargs = {'optimize': True}
+        if fmt == 'JPEG':
+            save_kwargs['quality'] = 92
+        cropped.save(buf, format=fmt, **save_kwargs)
+        buf.seek(0)
+
+        log.info(f'  Image cover-crop for {placeholder}: {img_w}x{img_h} → {cropped.size[0]}x{cropped.size[1]} (shape {shape_w}x{shape_h} EMU)')
 
         sp_element = shape.element
         blip_fills = sp_element.findall('.//' + qn('a:blip'))
 
         if blip_fills:
             slide_part = slide.part
-            image_part, rId = slide_part.get_or_add_image_part(img_stream)
+            image_part, rId = slide_part.get_or_add_image_part(buf)
             blip_fills[0].set(qn('r:embed'), rId)
+            # Ensure stretch fill mode (no tile/crop by pptx engine)
+            sp_tree = sp_element.findall('.//' + qn('a:stretch'))
+            if not sp_tree:
+                blipFill = sp_element.find('.//' + qn('a:blipFill'))
+                if blipFill is not None:
+                    stretch = etree.SubElement(blipFill, qn('a:stretch'))
+                    etree.SubElement(stretch, qn('a:fillRect'))
             stats[placeholder] = 1
             return
 
+        # Fallback: add as new picture at shape position
         left = shape.left
         top = shape.top
         width = shape.width
@@ -1406,7 +1452,7 @@ def replace_image_in_shape(slide, shape, image_b64: str, stats: dict, placeholde
                 for run in para.runs:
                     run.text = ''
 
-        slide.shapes.add_picture(img_stream, left, top, width, height)
+        slide.shapes.add_picture(buf, left, top, width, height)
         stats[placeholder] = 1
 
     except Exception as e:
@@ -1506,19 +1552,36 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
     for slide in prs.slides:
         resize_bar_shapes(slide, text_mapping, stats)
 
-    # Pass 3: Highlight remaining unfilled {{...}} placeholders in yellow (Priority 1a)
+    # Pass 3: Handle remaining unfilled {{...}} placeholders
+    #  - img_ placeholders → solid fill shape with #798C3A, clear text
+    #  - other placeholders → yellow text highlight (Priority 1a)
     for slide in prs.slides:
         for shape in slide.shapes:
             if shape.has_text_frame:
-                for paragraph in shape.text_frame.paragraphs:
-                    full_text = ''.join(run.text for run in paragraph.runs)
-                    if '{{' in full_text and '}}' in full_text:
-                        for run in paragraph.runs:
-                            if '{{' in run.text or '}}' in run.text:
-                                rPr = run._r.get_or_add_rPr()
-                                highlight = etree.SubElement(rPr, qn('a:highlight'))
-                                srgb = etree.SubElement(highlight, qn('a:srgbClr'))
-                                srgb.set('val', 'FFFF00')
+                full_text = shape.text
+                if '{{' in full_text and '}}' in full_text:
+                    # Check if this shape has unfilled img_ placeholders
+                    img_unfilled = re.findall(r'\{\{(img_[^}]+)\}\}', full_text)
+                    if img_unfilled:
+                        # Solid fill the entire shape with #798C3A
+                        shape.fill.solid()
+                        shape.fill.fore_color.rgb = RGBColor(0x79, 0x8C, 0x3A)
+                        # Clear all text from this shape
+                        for paragraph in shape.text_frame.paragraphs:
+                            for run in paragraph.runs:
+                                run.text = ''
+                        log.info(f'  Green-filled img placeholder shape: {shape.name} ({", ".join(img_unfilled)})')
+                    else:
+                        # Non-img placeholders: yellow highlight
+                        for paragraph in shape.text_frame.paragraphs:
+                            full_para = ''.join(run.text for run in paragraph.runs)
+                            if '{{' in full_para and '}}' in full_para:
+                                for run in paragraph.runs:
+                                    if '{{' in run.text or '}}' in run.text:
+                                        rPr = run._r.get_or_add_rPr()
+                                        highlight = etree.SubElement(rPr, qn('a:highlight'))
+                                        srgb = etree.SubElement(highlight, qn('a:srgbClr'))
+                                        srgb.set('val', 'FFFF00')
 
             if shape.has_table:
                 for row in shape.table.rows:
@@ -1877,11 +1940,21 @@ def api_generate_ppt():
         output = BytesIO(pptx_bytes)
         output.seek(0)
 
+        # Build dynamic filename: YYYYMMDD_iSFP_ClientName.pptx
+        kunde_name = approved_data.get('kunde_name', '').strip()
+        if not kunde_name:
+            # Try other common keys
+            kunde_name = approved_data.get('client_name', '') or approved_data.get('owner', '') or 'Kunde'
+        # Sanitize filename
+        safe_name = re.sub(r'[^\w\s\-]', '', kunde_name).strip().replace(' ', '_')
+        date_prefix = datetime.now().strftime('%Y%m%d')
+        download_filename = f'{date_prefix}_iSFP_{safe_name}.pptx' if safe_name else f'{date_prefix}_iSFP.pptx'
+
         return send_file(
             output,
             mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation',
             as_attachment=True,
-            download_name='presentation_filled.pptx',
+            download_name=download_filename,
         )
 
     except Exception as e:
