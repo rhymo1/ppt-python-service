@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Flask App v5.3  –  Complete iSFP PPT Generation Service
-Based on v5.2 + progressive energy loss logic + Maßnahme separator.
+Flask App v5.4  –  Complete iSFP PPT Generation Service
+Based on v5.3 + image modes + labels + green hints.
 
-v5.3 additions:
-  P0a  Progressive energy loss values (90 suffixed keys for slides 12/19/23/27/33)
-  P0b  "Maßnahme:" separator prepended to _loesung text values
-  P0c  New heizung_ist / heizung_loesung placeholders supported
-  P1a  Bar shape suffix regex updated for _ist1, _ist2 etc.
-  P1b  Slide 6 IST-only (red bars only, no green, no loesung)
-  P2a  Cost number format (drop € from values — now in table column)
+v5.4 additions:
+  Img1  FIT mode for generated charts (no crop), COVER mode for PDF-extracted photos
+  Img2  "Ist-Zustand: " (bold) and "Lösung: " (bold) labels replace "Maßnahme:" separator
+  Img3  Green img placeholders show italic "Bitte Bild einfügen" in white text
+  Pct   Unimproved pct values show "0%" instead of empty/yellow highlight
 
 Previous versions:
   v5.2: Yellow highlight, heizung loss, fenster typo, bar resizing, PDF images
@@ -915,7 +913,7 @@ def generate_progressive_loss_placeholders(losses: dict) -> dict:
     
     For components NOT yet improved at a given suffix:
       - loesung value = IST value (green bar same height as red)
-      - pct = '' (empty — no reduction shown)
+      - pct = '0%' (zero reduction shown)
     
     Returns dict of ~108 placeholder keys.
     """
@@ -974,7 +972,7 @@ def generate_progressive_loss_placeholders(losses: dict) -> dict:
             else:
                 # Component NOT yet improved → green = IST, no percentage
                 loesung_val = ist_val
-                pct_val = ''
+                pct_val = '0%'
             
             placeholders[f'loss_{comp_key}_kwh_ist{suffix}'] = ist_val
             placeholders[f'loss_{comp_key}_kwh_loesung{suffix}'] = loesung_val
@@ -1438,15 +1436,16 @@ def replace_text_in_table(table, mapping: dict, stats: dict):
                             stats[placeholder] = stats.get(placeholder, 0) + 1
 
 
-def replace_image_in_shape(slide, shape, image_b64: str, stats: dict, placeholder: str):
+def replace_image_in_shape(slide, shape, image_b64: str, stats: dict, placeholder: str, fit_mode: bool = False):
     """
     Replace image via blipFill to preserve z-order.
-    Images fill shape fully (cover mode): scale to fill, center-crop, lock aspect ratio.
+    fit_mode=False (default): COVER mode — scale to fill shape, center-crop excess (for photos).
+    fit_mode=True:            FIT/CONTAIN mode — scale to fit within shape, no crop (for charts).
     """
     try:
         img_data = base64.b64decode(image_b64)
 
-        # Open image to get dimensions for cover-crop
+        # Open image to get dimensions for processing
         pil_img = Image.open(BytesIO(img_data))
         img_w, img_h = pil_img.size
 
@@ -1454,33 +1453,56 @@ def replace_image_in_shape(slide, shape, image_b64: str, stats: dict, placeholde
         shape_w = shape.width
         shape_h = shape.height
 
-        # Cover crop: scale so shortest side fills shape, then center-crop
         shape_ratio = shape_w / shape_h if shape_h > 0 else 1.0
         img_ratio = img_w / img_h if img_h > 0 else 1.0
 
-        if img_ratio > shape_ratio:
-            # Image is wider → match height, crop sides
-            new_h = img_h
-            new_w = int(img_h * shape_ratio)
-            left = (img_w - new_w) // 2
-            crop_box = (left, 0, left + new_w, new_h)
-        else:
-            # Image is taller → match width, crop top/bottom
-            new_w = img_w
-            new_h = int(img_w / shape_ratio)
-            top = (img_h - new_h) // 2
-            crop_box = (0, top, new_w, top + new_h)
+        if fit_mode:
+            # FIT/CONTAIN: scale image to fit entirely within shape, white padding
+            if img_ratio > shape_ratio:
+                # Image wider than shape → fit to width, pad top/bottom
+                new_w = img_w
+                new_h = int(img_w / shape_ratio)
+            else:
+                # Image taller than shape → fit to height, pad left/right
+                new_h = img_h
+                new_w = int(img_h * shape_ratio)
 
-        cropped = pil_img.crop(crop_box)
+            # Create white background canvas at target aspect ratio
+            canvas = Image.new('RGB', (new_w, new_h), (255, 255, 255))
+            # Paste original image centered on canvas
+            paste_x = (new_w - img_w) // 2
+            paste_y = (new_h - img_h) // 2
+            if pil_img.mode == 'RGBA':
+                canvas.paste(pil_img, (paste_x, paste_y), pil_img)
+            else:
+                canvas.paste(pil_img, (paste_x, paste_y))
+            final_img = canvas
+            log.info(f'  Image FIT for {placeholder}: {img_w}x{img_h} → canvas {new_w}x{new_h} (shape {shape_w}x{shape_h} EMU)')
+        else:
+            # COVER: scale so shortest side fills shape, then center-crop
+            if img_ratio > shape_ratio:
+                # Image is wider → match height, crop sides
+                new_h = img_h
+                new_w = int(img_h * shape_ratio)
+                left = (img_w - new_w) // 2
+                crop_box = (left, 0, left + new_w, new_h)
+            else:
+                # Image is taller → match width, crop top/bottom
+                new_w = img_w
+                new_h = int(img_w / shape_ratio)
+                top = (img_h - new_h) // 2
+                crop_box = (0, top, new_w, top + new_h)
+
+            final_img = pil_img.crop(crop_box)
+            log.info(f'  Image COVER-crop for {placeholder}: {img_w}x{img_h} → {final_img.size[0]}x{final_img.size[1]} (shape {shape_w}x{shape_h} EMU)')
+
         buf = BytesIO()
         fmt = 'PNG' if pil_img.mode == 'RGBA' else 'JPEG'
         save_kwargs = {'optimize': True}
         if fmt == 'JPEG':
             save_kwargs['quality'] = 92
-        cropped.save(buf, format=fmt, **save_kwargs)
+        final_img.save(buf, format=fmt, **save_kwargs)
         buf.seek(0)
-
-        log.info(f'  Image cover-crop for {placeholder}: {img_w}x{img_h} → {cropped.size[0]}x{cropped.size[1]} (shape {shape_w}x{shape_h} EMU)')
 
         sp_element = shape.element
         blip_fills = sp_element.findall('.//' + qn('a:blip'))
@@ -1590,28 +1612,41 @@ def resize_bar_shapes(slide, text_mapping: dict, stats: dict):
 def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: dict) -> tuple:
     """
     Fill the template. Returns (pptx_bytes, stats_dict).
-    Pass 0: Pre-process — add "Maßnahme:" prefix to component _loesung texts (P0b)
-    Pass 1: Text + image replacement
+    Pass 0: Pre-process — add "Ist-Zustand: " / "Lösung: " labels to component texts
+    Pass 1: Text + image replacement (FIT mode for charts, COVER mode for photos)
+    Pass 1b: Bold formatting for "Ist-Zustand: " / "Lösung: " labels
     Pass 2: Bar shape resizing (Priority 2 + P1a suffix support)
-    Pass 3: Yellow highlight for unfilled placeholders
+    Pass 3: Handle remaining unfilled placeholders (green img + yellow text)
     """
     prs = Presentation(BytesIO(template_bytes))
     stats = {}
 
-    # --- Pass 0: Prepend "Maßnahme:" to component _loesung text values ---
-    # These are the component detail text fields where ist+loesung share one text box.
-    # The "Maßnahme:" acts as a title/separator for the loesung section.
+    # --- Pass 0: Prepend "Ist-Zustand: " / "Lösung: " to component text values ---
+    # The detail slides have ist+loesung in one text box.  We prefix each with a bold label.
+    ist_text_keys = [
+        'dach_ist', 'fenster_ist', 'aussenwand_ist',
+        'keller_ist', 'heizung_ist', 'warmwasser_ist',
+        'lueftung_ist',
+    ]
     loesung_text_keys = [
         'dach_loesung', 'fenster_loesung', 'aussenwand_loesung',
         'keller_loesung', 'heizung_loesung', 'warmwasser_loesung',
         'lueftung_loesung',
     ]
+    for key in ist_text_keys:
+        if key in text_mapping and text_mapping[key]:
+            val = str(text_mapping[key]).strip()
+            if val and not val.startswith('Ist-Zustand:'):
+                text_mapping[key] = f'Ist-Zustand: {val}'
     for key in loesung_text_keys:
         if key in text_mapping and text_mapping[key]:
             val = str(text_mapping[key]).strip()
-            if val and not val.startswith('Maßnahme:'):
-                text_mapping[key] = f'Maßnahme:\n{val}'
-    log.info(f'  Pass 0: Prepended "Maßnahme:" to {len([k for k in loesung_text_keys if k in text_mapping])} loesung texts')
+            if val and not val.startswith('Lösung:'):
+                text_mapping[key] = f'Lösung: {val}'
+    log.info(f'  Pass 0: Prepended "Ist-Zustand:" / "Lösung:" labels to component texts')
+
+    # Chart image keys use FIT mode (no crop), extracted images use COVER mode (fill+crop)
+    CHART_IMAGE_PREFIXES = ('img_energieklasse', 'img_endenergiebedarf', 'img_brennstoffkosten', 'img_energieverluste')
 
     # Pass 1: Text and image replacement
     for slide in prs.slides:
@@ -1622,7 +1657,8 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
                 for img_key, img_b64 in image_mapping.items():
                     pattern = '{{' + img_key + '}}'
                     if pattern in full_text:
-                        replace_image_in_shape(slide, shape, img_b64, stats, img_key)
+                        is_chart = img_key.startswith(CHART_IMAGE_PREFIXES)
+                        replace_image_in_shape(slide, shape, img_b64, stats, img_key, fit_mode=is_chart)
                         img_replaced = True
                         break
 
@@ -1631,6 +1667,33 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
 
             if shape.has_table:
                 replace_text_in_table(shape.table, text_mapping, stats)
+
+    # Pass 1b: Apply bold formatting to "Ist-Zustand: " and "Lösung: " labels
+    bold_prefixes = ['Ist-Zustand: ', 'Lösung: ']
+    bold_count = 0
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for paragraph in shape.text_frame.paragraphs:
+                    for run in list(paragraph.runs):
+                        for prefix in bold_prefixes:
+                            if run.text.startswith(prefix):
+                                # Split: create bold run for prefix, keep rest in original run
+                                rest_text = run.text[len(prefix):]
+                                run.text = prefix
+                                run.font.bold = True
+                                # Insert a new run after this one for the rest of the text
+                                if rest_text:
+                                    new_r = deepcopy(run._r)
+                                    new_r.text = rest_text
+                                    # Remove bold from the copy
+                                    new_rPr = new_r.find(qn('a:rPr'))
+                                    if new_rPr is not None:
+                                        new_rPr.attrib.pop('b', None)
+                                    run._r.addnext(new_r)
+                                bold_count += 1
+                                break
+    log.info(f'  Pass 1b: Applied bold to {bold_count} Ist-Zustand/Lösung labels')
 
     # Pass 2: Bar chart shape resizing (Priority 2)
     for slide in prs.slides:
@@ -1650,11 +1713,29 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
                         # Solid fill the entire shape with #798C3A
                         shape.fill.solid()
                         shape.fill.fore_color.rgb = RGBColor(0x79, 0x8C, 0x3A)
-                        # Clear all text from this shape
+                        # Clear existing text and add italic hint text
                         for paragraph in shape.text_frame.paragraphs:
                             for run in paragraph.runs:
                                 run.text = ''
-                        log.info(f'  Green-filled img placeholder shape: {shape.name} ({", ".join(img_unfilled)})')
+                        # Add "Bitte Bild einfügen" in white italic
+                        if shape.text_frame.paragraphs:
+                            p = shape.text_frame.paragraphs[0]
+                            if p.runs:
+                                p.runs[0].text = 'Bitte Bild einfügen'
+                                p.runs[0].font.italic = True
+                                p.runs[0].font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+                                p.runs[0].font.size = Pt(10)
+                            else:
+                                run_elem = etree.SubElement(p._p, qn('a:r'))
+                                rPr = etree.SubElement(run_elem, qn('a:rPr'))
+                                rPr.set('i', '1')
+                                rPr.set('sz', '1000')
+                                solidFill_r = etree.SubElement(rPr, qn('a:solidFill'))
+                                srgb_r = etree.SubElement(solidFill_r, qn('a:srgbClr'))
+                                srgb_r.set('val', 'FFFFFF')
+                                t = etree.SubElement(run_elem, qn('a:t'))
+                                t.text = 'Bitte Bild einfügen'
+                        log.info(f'  Green-filled img placeholder: {shape.name} + italic hint text')
                     else:
                         # Non-img placeholders: yellow highlight
                         for paragraph in shape.text_frame.paragraphs:
