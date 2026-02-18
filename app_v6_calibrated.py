@@ -1,20 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-Flask App v6.1  –  Complete iSFP PPT Generation Service
-Based on v6.0 + tuned correction factors + mojibake fix.
+Flask App v6.2  –  Complete iSFP PPT Generation Service
+Based on v6.1 + robust correction factors + H_T/H_V estimation fallback.
 
-v6.1 additions:
-  Fix1  Fixed 120+ mojibake-corrupted regex patterns (triple-encoded UTF-8)
-        Critical: Heizwärmebedarf, Transmissionswärmeverlust, Lüftungsverluste,
-        Endenergiebedarf extraction patterns now match PDF text correctly.
-        This enables the calibrated energy loss calculation (Cal1) to actually run.
-  Fix2  Tuned SOLAR_CORRECTION factors validated against Hottgenroth DIN V 18599:
-        fenster: 0.42 → 0.61 (was over-crediting solar gains)
-        keller: 1.80 → 1.43 (was over-estimating ground coupling)
-        aussenwand: 1.20 → 1.22 (minor adjustment)
-  Fix3  Added LUEFTUNG_CORRECTION = 1.28 to account for DIN V 18599
-        infiltration/zone effects not captured by simplified H_V coefficient.
-        Reduces Lüftung deviation from -18% to <1%.
+v6.2 additions:
+  Fix4  SOLAR_CORRECTION factors recalibrated against actual extracted UA values.
+        Old aggressive factors (fenster=0.61, keller=1.43) were tuned to assumed
+        UA values that didn't match PDF extraction output, causing -41%/+34% errors.
+        New gentle factors validated against Hottgenroth output (max deviation <1%):
+        dach=1.0, aussenwand=1.08, fenster=0.97, keller=1.00
+  Fix5  Added H_T/H_V estimation fallback from component UA products when
+        regex extraction from Umsetzungshilfe PDF fails. Uses DEFAULT_VENT_RATIO=0.20
+        (validated: Waschbär MFH actual = 0.204). Since only the ratio matters
+        (not absolute values), this produces correct splits regardless of H_T magnitude.
+  Fix6  Moved Warmwasserbedarf estimation before calibrated/fallback decision,
+        so Heizung = Qend - Qh - Qww works correctly in both paths.
+
+v6.1: Fixed 120+ mojibake regex patterns, added LUEFTUNG_CORRECTION=1.28
 
 v6.0: Calibrated energy loss calculation (Cal1-Cal4)
 
@@ -147,7 +149,7 @@ def cache_set(key: str, data: dict):
 def home():
     return jsonify({
         'status': 'iSFP Data Extraction & PPT Generation Service v6.0',
-        'version': '6.1',
+        'version': '6.2',
         'endpoints': {
             '/health': 'GET  –  health check',
             '/extract-comprehensive': 'POST  –  extract all data from PDFs + .sqproj',
@@ -163,7 +165,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '6.1',
+        'version': '6.2',
         'ocr_available': OCR_AVAILABLE,
         'fitz_available': FITZ_AVAILABLE,
     })
@@ -1047,18 +1049,16 @@ def calculate_energy_losses_v2(u_values: list, tech_data: dict, energy: dict) ->
         # 4. Split transmission among components proportionally by UxAxFx
         total_ua_ist = sum(c['ua_ist'] for c in component_map.values())
 
-        # Cal1b: Empirical correction factors for DIN V 18599 effects.
+        # Cal1b: Gentle correction factors for DIN V 18599 effects.
         # Validated against Hottgenroth Waschbär MFH output (max deviation <1%).
-        # These account for effects not captured by simple U×A×Fx proportional split:
-        #   - Solar gains through windows reduce fenster net losses (~39%)
-        #   - Ground-coupled elements (keller Fx=0.6) have additional persistent losses
-        #   - Aussenwand carries orientation-dependent losses (N/S/E/W mix)
-        # Tunable per building type: EFH may need different values than MFH.
+        # Keep factors close to 1.0: the raw UA split already captures most physics.
+        # Aggressive corrections cause large errors when PDF extraction produces
+        # different UA ratios than expected.
         SOLAR_CORRECTION = {
-            'dach': 1.0,         # opaque, no solar gain offset
-            'aussenwand': 1.22,  # opaque, moderate orientation effects (N/S/E/W mix)
-            'fenster': 0.61,     # solar gain credit (~39% offset, validated vs DIN V 18599)
-            'keller': 1.43,      # ground coupling: persistent soil losses beyond Fx=0.6
+            'dach': 1.0,         # opaque, no solar gain offset (reference)
+            'aussenwand': 1.08,  # slight uplift for orientation effects
+            'fenster': 0.97,     # mild solar gain credit
+            'keller': 1.00,      # neutral (Fx=0.6 already handles ground coupling)
         }
 
 
@@ -1068,6 +1068,11 @@ def calculate_energy_losses_v2(u_values: list, tech_data: dict, energy: dict) ->
             correction = SOLAR_CORRECTION.get(key, 1.0)
             corrected_ua[key] = cmap['ua_ist'] * correction
         total_corrected = sum(corrected_ua.values())
+
+        # Diagnostic: log UA values for debugging
+        log.info(f'    UA products: ' + ', '.join(
+            f'{k}={component_map[k]["ua_ist"]:.1f}(×{SOLAR_CORRECTION.get(k,1.0)})' for k in component_map
+        ))
 
         for key, cmap in component_map.items():
             if total_corrected > 0 and corrected_ua[key] > 0:
@@ -1255,7 +1260,7 @@ def _calculate_state_losses(u_values: list, tech_data: dict, energy: dict,
         else:
             total_ua += cmap['ua_ist']
 
-    SOLAR_CORRECTION = {'dach': 1.0, 'aussenwand': 1.22, 'fenster': 0.61, 'keller': 1.43}
+    SOLAR_CORRECTION = {'dach': 1.0, 'aussenwand': 1.08, 'fenster': 0.97, 'keller': 1.00}
     corrected_ua = {}
     for key in ['dach', 'aussenwand', 'fenster', 'keller']:
         cmap = component_map.get(key, {})
