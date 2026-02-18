@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir pytesseract
 
 # Copy app
-COPY app_v5_comprehensive.py ./app.py
+COPY app_v6_calibrated.py ./app.py
 
 # Create cache directory
 RUN mkdir -p /tmp/isfp_cache
