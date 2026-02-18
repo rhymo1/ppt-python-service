@@ -122,7 +122,10 @@ def cache_get(key: str):
 def cache_set(key: str, data: dict):
     path = CACHE_DIR / f'{key}.json'
     try:
-        path.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding='utf-8')
+        # Atomic write: write to temp file then rename (prevents partial reads)
+        tmp_path = path.with_suffix('.tmp')
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding='utf-8')
+        tmp_path.rename(path)
     except Exception as e:
         log.warning(f'Cache write failed: {e}')
 
@@ -1511,12 +1514,19 @@ def replace_image_in_shape(slide, shape, image_b64: str, stats: dict, placeholde
             slide_part = slide.part
             image_part, rId = slide_part.get_or_add_image_part(buf)
             blip_fills[0].set(qn('r:embed'), rId)
-            # Ensure stretch fill mode (no tile/crop by pptx engine)
-            sp_tree = sp_element.findall('.//' + qn('a:stretch'))
-            if not sp_tree:
-                blipFill = sp_element.find('.//' + qn('a:blipFill'))
-                if blipFill is not None:
+            blipFill = sp_element.find('.//' + qn('a:blipFill'))
+            if blipFill is not None:
+                # Remove srcRect (would clip/offset the image)
+                for srcRect in blipFill.findall(qn('a:srcRect')):
+                    blipFill.remove(srcRect)
+                # Remove tile (would repeat instead of stretch)
+                for tile in blipFill.findall(qn('a:tile')):
+                    blipFill.remove(tile)
+                # Ensure stretch fill mode with centered fillRect
+                stretch = blipFill.find(qn('a:stretch'))
+                if stretch is None:
                     stretch = etree.SubElement(blipFill, qn('a:stretch'))
+                if stretch.find(qn('a:fillRect')) is None:
                     etree.SubElement(stretch, qn('a:fillRect'))
             stats[placeholder] = 1
             return
@@ -1967,10 +1977,11 @@ def api_read_template():
         # Save template to disk for later use by /generate
         template_hash = hashlib.sha256(template_bytes).hexdigest()[:16]
         template_path = TEMPLATE_DIR / f'{template_hash}.pptx'
-        template_path.write_bytes(template_bytes)
+        # Atomic write: temp file then rename
+        tmp_template = template_path.with_suffix('.tmp')
+        tmp_template.write_bytes(template_bytes)
+        tmp_template.rename(template_path)
         log.info(f'Template saved: {template_path} ({len(template_bytes):,} bytes)')
-        latest_path = TEMPLATE_DIR / 'latest.pptx'
-        latest_path.write_bytes(template_bytes)
 
         prs = Presentation(BytesIO(template_bytes))
         placeholders = set()
@@ -2074,15 +2085,12 @@ def api_generate_ppt():
                         template_bytes = hash_path.read_bytes()
                         log.info(f'Using stored template by hash: {template_hash} ({len(template_bytes):,} bytes)')
 
-        # --- Fall back to latest stored template ---
+        # --- Fall back: no template found ---
         if not template_bytes:
-            latest_path = TEMPLATE_DIR / 'latest.pptx'
-            if latest_path.exists():
-                template_bytes = latest_path.read_bytes()
-                log.info(f'Using latest stored template ({len(template_bytes):,} bytes)')
+            log.warning('No template provided and no template_hash matched. Rejecting request.')
 
         if not template_bytes:
-            return jsonify({'error': 'No template provided and no stored template found. Call /read-template-placeholders first.'}), 400
+            return jsonify({'error': 'No template found. Provide template_hash from /read-template-placeholders or upload template file.'}), 400
         if not approved_data:
             return jsonify({'error': 'No data/approved_data provided'}), 400
 
@@ -2108,9 +2116,10 @@ def api_generate_ppt():
         # Build dynamic filename: YYYYMMDD_iSFP_ClientName.pptx
         kunde_name = approved_data.get('kunde_name', '').strip()
         if not kunde_name:
-            # Try other common keys
             kunde_name = approved_data.get('client_name', '') or approved_data.get('owner', '') or 'Kunde'
-        # Sanitize filename
+        # Strip salutation (Herr/Frau) for cleaner filename
+        kunde_name = re.sub(r'^(Herr|Frau)\s+', '', kunde_name).strip()
+        # Sanitize filename: keep word chars (incl. umlauts), spaces, hyphens
         safe_name = re.sub(r'[^\w\s\-]', '', kunde_name).strip().replace(' ', '_')
         date_prefix = datetime.now().strftime('%Y%m%d')
         download_filename = f'{date_prefix}_iSFP_{safe_name}.pptx' if safe_name else f'{date_prefix}_iSFP.pptx'
