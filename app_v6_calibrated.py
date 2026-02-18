@@ -984,20 +984,41 @@ def calculate_energy_losses_v2(u_values: list, tech_data: dict, energy: dict) ->
     if tech_data.get('warmwasserbedarf'):
         qww = _parse_float(tech_data['warmwasserbedarf'])
 
+    # Estimate Warmwasserbedarf if not extracted (needed for both calibrated and fallback)
+    if not qww or qww <= 0:
+        if qend_ist and qend_ist > 0:
+            qww = qend_ist * 0.035  # ~3.5% of Endenergiebedarf (conservative)
+        elif qh_ist and qh_ist > 0:
+            qww = qh_ist * 0.08  # ~8% of Heizwärmebedarf
+        else:
+            qww = 0
+        if qww > 0:
+            log.info(f'    Qww estimated: {qww:.0f} kWh/a')
+
+    # --- Cal1b: Estimate H_T/H_V from component UA products when not extracted ---
+    # The H_T and H_V regex may fail on some PDF layouts. When Qh_ist is available
+    # but H_T/H_V are not, estimate ventilation share from typical building physics.
+    if (not ht_ist or ht_ist <= 0 or not hv_ist or hv_ist <= 0) and qh_ist and qh_ist > 0:
+        total_ua = sum(c['ua_ist'] for c in component_map.values())
+        if total_ua > 0:
+            # Use component UA sum as proxy for H_T (note: this is approximate,
+            # DIN V 18599 H_T includes thermal bridges, ground coupling corrections etc.)
+            ht_ist = total_ua
+            # Default ventilation-to-transmission ratio for German residential buildings:
+            #   MFH without mechanical ventilation: H_V/(H_T+H_V) ≈ 0.20
+            #   EFH without mechanical ventilation: H_V/(H_T+H_V) ≈ 0.18
+            # Validated: Waschbär MFH actual ratio = 109/(425+109) = 0.204
+            DEFAULT_VENT_RATIO = 0.20
+            hv_ist = ht_ist * DEFAULT_VENT_RATIO / (1 - DEFAULT_VENT_RATIO)
+            log.info(f'  Cal1b: H_T/H_V not extracted from PDF — estimating from component data')
+            log.info(f'    H_T_est={ht_ist:.0f} W/K (UA sum), H_V_est={hv_ist:.0f} W/K (ratio={DEFAULT_VENT_RATIO})')
+
     # --- Decide: calibrated vs fallback ---
     use_calibrated = (qh_ist and qh_ist > 0 and ht_ist and ht_ist > 0 and hv_ist and hv_ist > 0)
 
     if use_calibrated:
         log.info(f'  Cal1: Using CALIBRATED energy loss calculation')
         log.info(f'    Qh={qh_ist}, Qend={qend_ist}, Qww={qww}, H_T={ht_ist}, H_V={hv_ist}')
-
-        # Estimate Warmwasserbedarf if not extracted
-        if not qww or qww <= 0:
-            if qend_ist and qend_ist > 0:
-                qww = qend_ist * 0.035  # ~3.5% conservative estimate
-            else:
-                qww = qh_ist * 0.08  # fallback
-            log.info(f'    Qww estimated: {qww:.0f} kWh/a')
 
         # 1. Heizung losses (heating system chain losses)
         if qend_ist and qend_ist > 0:
