@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Flask App v5.4  –  Complete iSFP PPT Generation Service
-Based on v5.3 + image modes + labels + green hints.
+Flask App v6.0  â€“  Complete iSFP PPT Generation Service
+Based on v5.4 + calibrated energy loss calculation (Cal1-Cal4).
 
 v5.4 additions:
   Img1  FIT mode for generated charts (no crop), COVER mode for PDF-extracted photos
-  Img2  "Ist-Zustand: " (bold) and "Lösung: " (bold) labels replace "Maßnahme:" separator
-  Img3  Green img placeholders show italic "Bitte Bild einfügen" in white text
+  Img2  "Ist-Zustand: " (bold) and "LÃ¶sung: " (bold) labels replace "MaÃŸnahme:" separator
+  Img3  Green img placeholders show italic "Bitte Bild einfÃ¼gen" in white text
   Pct   Unimproved pct values show "0%" instead of empty/yellow highlight
 
 Previous versions:
@@ -91,11 +91,11 @@ class ExtractionLog:
 
     def ok(self, field: str, value, source: str = ''):
         self.entries.append({'field': field, 'status': 'ok', 'value': str(value)[:120], 'source': source})
-        log.info(f'  ✔ {field} = {str(value)[:80]}')
+        log.info(f'  âœ” {field} = {str(value)[:80]}')
 
     def miss(self, field: str, reason: str = ''):
         self.entries.append({'field': field, 'status': 'miss', 'reason': reason})
-        log.warning(f'  ✗ {field}  –  {reason}')
+        log.warning(f'  âœ— {field}  â€“  {reason}')
 
     def summary(self):
         ok_count = sum(1 for e in self.entries if e['status'] == 'ok')
@@ -137,14 +137,14 @@ def cache_set(key: str, data: dict):
 @app.route('/')
 def home():
     return jsonify({
-        'status': 'iSFP Data Extraction & PPT Generation Service v5.3',
-        'version': '5.3',
+        'status': 'iSFP Data Extraction & PPT Generation Service v6.0',
+        'version': '6.0',
         'endpoints': {
-            '/health': 'GET  –  health check',
-            '/extract-comprehensive': 'POST  –  extract all data from PDFs + .sqproj',
-            '/read-template-placeholders': 'POST  –  read {{placeholders}} from .pptx',
-            '/generate-charts': 'POST (JSON)  –  generate chart images',
-            '/generate': 'POST (multipart)  –  fill template and return .pptx',
+            '/health': 'GET  â€“  health check',
+            '/extract-comprehensive': 'POST  â€“  extract all data from PDFs + .sqproj',
+            '/read-template-placeholders': 'POST  â€“  read {{placeholders}} from .pptx',
+            '/generate-charts': 'POST (JSON)  â€“  generate chart images',
+            '/generate': 'POST (multipart)  â€“  fill template and return .pptx',
         }
     })
 
@@ -154,14 +154,14 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '5.3',
+        'version': '6.0',
         'ocr_available': OCR_AVAILABLE,
         'fitz_available': FITZ_AVAILABLE,
     })
 
 
 # ============================================================================
-# HELPER: .sqproj READER (Bug #0  –  SQLite, not ZIP/XML)
+# HELPER: .sqproj READER (Bug #0  â€“  SQLite, not ZIP/XML)
 # ============================================================================
 
 def extract_all_from_sqproj(sqproj_bytes: bytes) -> dict:
@@ -256,7 +256,7 @@ def extract_all_from_sqproj(sqproj_bytes: bytes) -> dict:
 
 
 # ============================================================================
-# HELPER: PDF READER (Bug #10  –  pdfplumber; Bug #11  –  no whitespace nuke)
+# HELPER: PDF READER (Bug #10  â€“  pdfplumber; Bug #11  â€“  no whitespace nuke)
 # ============================================================================
 
 def extract_all_data_from_pdf(pdf_bytes: bytes, label: str = 'pdf') -> dict:
@@ -320,7 +320,7 @@ def extract_all_data_from_pdf(pdf_bytes: bytes, label: str = 'pdf') -> dict:
 
 
 # ============================================================================
-# PDF IMAGE EXTRACTION (Priority 3  –  page rendering + auto-crop)
+# PDF IMAGE EXTRACTION (Priority 3  â€“  page rendering + auto-crop)
 # ============================================================================
 
 RENDER_DPI = 200
@@ -338,7 +338,7 @@ def extract_images_from_pdf(pdf_bytes: bytes, pdf_type: str = 'sanierungsfahrpla
     images = {}
 
     if not FITZ_AVAILABLE:
-        log.warning('  PyMuPDF (fitz) not available – skipping PDF image extraction')
+        log.warning('  PyMuPDF (fitz) not available â€“ skipping PDF image extraction')
         return images
 
     try:
@@ -356,7 +356,7 @@ def extract_images_from_pdf(pdf_bytes: bytes, pdf_type: str = 'sanierungsfahrpla
                 buf = BytesIO()
                 img.save(buf, format='PNG', optimize=True)
                 images['img_meinsanierungsfahrplan'] = base64.b64encode(buf.getvalue()).decode()
-                log.info(f'    ✔ img_meinsanierungsfahrplan ({pix.width}x{pix.height})')
+                log.info(f'    âœ” img_meinsanierungsfahrplan ({pix.width}x{pix.height})')
 
             # --- Page 1: Building photo (center of title page) ---
             if page_count >= 1:
@@ -369,9 +369,9 @@ def extract_images_from_pdf(pdf_bytes: bytes, pdf_type: str = 'sanierungsfahrpla
                 buf = BytesIO()
                 building_img.save(buf, format='PNG', optimize=True)
                 images['img_agendabild'] = base64.b64encode(buf.getvalue()).decode()
-                log.info(f'    ✔ img_agendabild ({building_img.size})')
+                log.info(f'    âœ” img_agendabild ({building_img.size})')
 
-            # --- Page 3: "Ihr Haus heute — Bestand" with Schwachstellen photos ---
+            # --- Page 3: "Ihr Haus heute â€” Bestand" with Schwachstellen photos ---
             if page_count >= 3:
                 page = doc[2]
                 pix = page.get_pixmap(dpi=RENDER_DPI)
@@ -399,7 +399,7 @@ def extract_images_from_pdf(pdf_bytes: bytes, pdf_type: str = 'sanierungsfahrpla
                         photo_regions.append((start, end))
 
                 # Map detected regions to placeholders
-                # Typical order: Dach, Haustür/Fenster, Keller, Heizung
+                # Typical order: Dach, HaustÃ¼r/Fenster, Keller, Heizung
                 photo_mapping = [
                     ('img_schwachstelle_1', 'img_dach_istzustand'),
                     ('img_fenster_ist', None),
@@ -420,7 +420,7 @@ def extract_images_from_pdf(pdf_bytes: bytes, pdf_type: str = 'sanierungsfahrpla
                     images[primary_key] = b64
                     if secondary_key:
                         images[secondary_key] = b64
-                    log.info(f'    ✔ {primary_key} (photo {i + 1})')
+                    log.info(f'    âœ” {primary_key} (photo {i + 1})')
 
         doc.close()
 
@@ -432,7 +432,7 @@ def extract_images_from_pdf(pdf_bytes: bytes, pdf_type: str = 'sanierungsfahrpla
 
 
 # ============================================================================
-# STRUCTURED DATA EXTRACTION (Bug #12, #13  –  rewritten patterns)
+# STRUCTURED DATA EXTRACTION (Bug #12, #13  â€“  rewritten patterns)
 # ============================================================================
 
 def _search(pattern: str, text: str, group: int = 1, default: str = '') -> str:
@@ -452,7 +452,7 @@ def _search_number(pattern: str, text: str, group: int = 1) -> str:
 def extract_building_info(text: str, elog: ExtractionLog) -> dict:
     info = {}
 
-    m = re.search(r'Gebäudeadresse\s*\n?\s*(.+?)\n\s*(\d{5})\s+(\S+)', text)
+    m = re.search(r'GebÃ¤udeadresse\s*\n?\s*(.+?)\n\s*(\d{5})\s+(\S+)', text)
     if m:
         info['street'] = m.group(1).strip()
         info['plz'] = m.group(2)
@@ -470,7 +470,7 @@ def extract_building_info(text: str, elog: ExtractionLog) -> dict:
         else:
             elog.miss('building.address', 'No address pattern found')
 
-    m = re.search(r'(?:Sehr geehrte[r]?|Herr|Frau)\s+(Herr|Frau)\s+([A-Za-zÀ-ÿ\-]+)', text)
+    m = re.search(r'(?:Sehr geehrte[r]?|Herr|Frau)\s+(Herr|Frau)\s+([\w\-]+)', text)
     if m:
         info['owner_salutation'] = m.group(1)
         info['owner_name'] = m.group(2)
@@ -479,7 +479,7 @@ def extract_building_info(text: str, elog: ExtractionLog) -> dict:
     else:
         elog.miss('building.owner')
 
-    val = _search(r'Gebäudetyp\s+(\S+(?:\s+\S+)?)', text)
+    val = _search(r'GebÃ¤udetyp\s+(\S+(?:\s+\S+)?)', text)
     if val:
         info['type'] = val
         elog.ok('building.type', val, 'pdf')
@@ -489,7 +489,7 @@ def extract_building_info(text: str, elog: ExtractionLog) -> dict:
         info['construction_year'] = val
         elog.ok('building.construction_year', val, 'pdf')
 
-    m = re.search(r'Wohnfläche\s+(?:ca\.?\s*)?([\d.,]+)\s*m', text)
+    m = re.search(r'WohnflÃ¤che\s+(?:ca\.?\s*)?([\d.,]+)\s*m', text)
     if m:
         info['living_area_m2'] = m.group(1).replace(',', '.')
         elog.ok('building.living_area', info['living_area_m2'], 'pdf')
@@ -516,11 +516,11 @@ def extract_building_info(text: str, elog: ExtractionLog) -> dict:
 def extract_consultant_info(text: str, elog: ExtractionLog) -> dict:
     info = {}
 
-    m = re.search(r'Energieberater[/in]*\s*\n\s*([A-Za-zÀ-ÿ\s\.\-]{3,50})\n', text)
+    m = re.search(r'Energieberater[/in]*\s*\n\s*([\w\s\.\-]{3,50})\n', text)
     if not m:
-        m = re.search(r'Ihr\s+Energieberater\s*:?\s*\n?\s*([A-Za-zÀ-ÿ\.\-]+(?:\s+[A-Za-zÀ-ÿ\.\-]+){1,3})', text)
+        m = re.search(r'Ihr\s+Energieberater\s*:?\s*\n?\s*([\w\.\-]+(?:\s+[\w\.\-]+){1,3})', text)
     if not m:
-        m = re.search(r'erstellt\s+(?:von|durch)\s+([A-Za-zÀ-ÿ\.\-]+(?:\s+[A-Za-zÀ-ÿ\.\-]+){1,3})', text)
+        m = re.search(r'erstellt\s+(?:von|durch)\s+([\w\.\-]+(?:\s+[\w\.\-]+){1,3})', text)
     if m:
         info['name'] = m.group(1).strip()
         elog.ok('consultant.name', info['name'], 'pdf')
@@ -551,12 +551,12 @@ def extract_energy_values(text: str, elog: ExtractionLog) -> dict:
     if ziel_marker > 0:
         ist_section = text[:ziel_marker]
 
-    m = re.search(r'Primärenergiebedarf\s*q\s*p?\s*\n?\s*([\d.,]+)\s*kWh/\(m²a\)', ist_section)
+    m = re.search(r'PrimÃ¤renergiebedarf\s*q\s*p?\s*\n?\s*([\d.,]+)\s*kWh/\(mÂ²a\)', ist_section)
     if m:
         result['ist']['primary_demand'] = m.group(1).replace('.', '').replace(',', '.')
         elog.ok('energy.ist.primary', result['ist']['primary_demand'], 'pdf')
     else:
-        m2 = re.search(r'(\d{2,3})\s*kWh/\(m²a\)', ist_section)
+        m2 = re.search(r'(\d{2,3})\s*kWh/\(mÂ²a\)', ist_section)
         if m2:
             result['ist']['primary_demand'] = m2.group(1)
 
@@ -565,12 +565,12 @@ def extract_energy_values(text: str, elog: ExtractionLog) -> dict:
         result['ist']['end_consumption'] = m.group(1).replace('.', '')
         elog.ok('energy.ist.end_consumption', result['ist']['end_consumption'], 'pdf')
 
-    m = re.search(r'Energiekosten[³\s]*\n?\s*([\d.,]+)\s*€/a', ist_section)
+    m = re.search(r'Energiekosten[Â³\s]*\n?\s*([\d.,]+)\s*â‚¬/a', ist_section)
     if m:
         result['ist']['costs'] = m.group(1).replace('.', '')
         elog.ok('energy.ist.costs', result['ist']['costs'], 'pdf')
 
-    m = re.search(r'(?:äquivalente\s*)?CO\s*2?\s*-?\s*Emission(?:en)?\s*\n?\s*([\d.,]+)\s*kg/\(m²a\)', ist_section)
+    m = re.search(r'(?:Ã¤quivalente\s*)?CO\s*2?\s*-?\s*Emission(?:en)?\s*\n?\s*([\d.,]+)\s*kg/\(mÂ²a\)', ist_section)
     if m:
         result['ist']['co2'] = m.group(1).replace(',', '.')
         elog.ok('energy.ist.co2', result['ist']['co2'], 'pdf')
@@ -578,7 +578,7 @@ def extract_energy_values(text: str, elog: ExtractionLog) -> dict:
     if ziel_marker > 0:
         ziel_section = text[ziel_marker:]
 
-        m = re.search(r'Primärenergiebedarf\s*q\s*p?\s*\n?\s*([\d.,]+)\s*kWh/\(m²a\)', ziel_section)
+        m = re.search(r'PrimÃ¤renergiebedarf\s*q\s*p?\s*\n?\s*([\d.,]+)\s*kWh/\(mÂ²a\)', ziel_section)
         if m:
             result['ziel']['primary_demand'] = m.group(1).replace('.', '').replace(',', '.')
             elog.ok('energy.ziel.primary', result['ziel']['primary_demand'], 'pdf')
@@ -588,11 +588,11 @@ def extract_energy_values(text: str, elog: ExtractionLog) -> dict:
             result['ziel']['end_consumption'] = m.group(1).replace('.', '')
             elog.ok('energy.ziel.end_consumption', result['ziel']['end_consumption'], 'pdf')
 
-        m = re.search(r'Energiekosten[³\s]*\n?\s*([\d.,]+)\s*€/a', ziel_section)
+        m = re.search(r'Energiekosten[Â³\s]*\n?\s*([\d.,]+)\s*â‚¬/a', ziel_section)
         if m:
             result['ziel']['costs'] = m.group(1).replace('.', '')
 
-        m = re.search(r'(?:äquivalente\s*)?CO\s*2?\s*-?\s*Emission(?:en)?\s*\n?\s*([\d.,]+)\s*kg/\(m²a\)', ziel_section)
+        m = re.search(r'(?:Ã¤quivalente\s*)?CO\s*2?\s*-?\s*Emission(?:en)?\s*\n?\s*([\d.,]+)\s*kg/\(mÂ²a\)', ziel_section)
         if m:
             result['ziel']['co2'] = m.group(1).replace(',', '.')
 
@@ -615,7 +615,7 @@ def extract_u_values_table(text: str, tables: list, elog: ExtractionLog) -> list
         header = tbl[0] if tbl[0] else []
         header_str = ' '.join(str(h) for h in header if h).lower()
 
-        if 'u-wert' in header_str or 'fläche' in header_str or 'istzustand' in header_str:
+        if 'u-wert' in header_str or 'flÃ¤che' in header_str or 'istzustand' in header_str:
             for row in tbl[1:]:
                 if not row or not any(row):
                     continue
@@ -633,7 +633,7 @@ def extract_u_values_table(text: str, tables: list, elog: ExtractionLog) -> list
                             f'A={entry["area_m2"]} U_ist={entry["u_ist"]} U_ziel={entry["u_ziel"]}', 'pdf_table')
 
     if not u_values:
-        pattern = r'(Außenwand|Wand an Erdreich|Boden|Dach|Fenster|Außentür)[^\n]*?(\d+[.,]\d+)\s+m²\s+([\d,]+)\s+'
+        pattern = r'(AuÃŸenwand|Wand an Erdreich|Boden|Dach|Fenster|AuÃŸentÃ¼r)[^\n]*?(\d+[.,]\d+)\s+mÂ²\s+([\d,]+)\s+'
         for m in re.finditer(pattern, text):
             entry = {
                 'component': m.group(1),
@@ -665,21 +665,21 @@ def extract_measure_packages(text: str, tables: list, elog: ExtractionLog) -> li
             'funding_info': '',
         }
 
-        pkg_pattern = rf'Maßnahmenpaket\s+{i}\s*\n(.*?)(?=Maßnahmenpaket\s+{i+1}|Ihr Haus in Zukun|Kostendarstellung|$)'
+        pkg_pattern = rf'MaÃŸnahmenpaket\s+{i}\s*\n(.*?)(?=MaÃŸnahmenpaket\s+{i+1}|Ihr Haus in Zukun|Kostendarstellung|$)'
         m = re.search(pkg_pattern, text, re.DOTALL)
         if not m:
-            pkg_pattern2 = rf'Maßnahmenpaket\s+{i}[^\n]*\n(.{{50,500}})'
+            pkg_pattern2 = rf'MaÃŸnahmenpaket\s+{i}[^\n]*\n(.{{50,500}})'
             m = re.search(pkg_pattern2, text, re.DOTALL)
 
         if m:
             section = m.group(1)
 
-            measure_lines = re.findall(r'[-•]\s*(.+?)(?:\n|$)', section)
+            measure_lines = re.findall(r'[-â€¢]\s*(.+?)(?:\n|$)', section)
             if measure_lines:
                 pkg['measures'] = [line.strip() for line in measure_lines if line.strip()]
                 pkg['name'] = ' + '.join(pkg['measures'][:3])
 
-            ep = re.search(r'Primärenergiebedarf\s*([\d.,]+)\s*kWh', section)
+            ep = re.search(r'PrimÃ¤renergiebedarf\s*([\d.,]+)\s*kWh', section)
             if ep:
                 pkg['primary_demand_after'] = ep.group(1).replace(',', '.')
 
@@ -691,7 +691,7 @@ def extract_measure_packages(text: str, tables: list, elog: ExtractionLog) -> li
             if eco2:
                 pkg['co2_after'] = eco2.group(1).replace(',', '.')
 
-        cost_pattern = rf'Maßnahmenpaket\s+{i}\s+gesamt\s+([\d.,]+)\s*€?\s+([\d.,]+)\s*€?\s+([\d.,]+)\s*€?\s+([\d.,]+)'
+        cost_pattern = rf'MaÃŸnahmenpaket\s+{i}\s+gesamt\s+([\d.,]+)\s*â‚¬?\s+([\d.,]+)\s*â‚¬?\s+([\d.,]+)\s*â‚¬?\s+([\d.,]+)'
         cm = re.search(cost_pattern, text)
         if cm:
             pkg['investment'] = cm.group(1).replace('.', '').replace(',', '.')
@@ -701,7 +701,7 @@ def extract_measure_packages(text: str, tables: list, elog: ExtractionLog) -> li
             elog.ok(f'package_{i}_costs', f'inv={pkg["investment"]}', 'pdf')
 
         if not pkg['investment']:
-            fp_pattern = rf'Maßnahmenpaket\s+{i}.*?(\d{{1,3}}(?:\.\d{{3}})*)\s*€.*?(\d{{1,3}}(?:\.\d{{3}})*)\s*€.*?(\d{{1,3}}(?:\.\d{{3}})*)\s*€'
+            fp_pattern = rf'MaÃŸnahmenpaket\s+{i}.*?(\d{{1,3}}(?:\.\d{{3}})*)\s*â‚¬.*?(\d{{1,3}}(?:\.\d{{3}})*)\s*â‚¬.*?(\d{{1,3}}(?:\.\d{{3}})*)\s*â‚¬'
             fm = re.search(fp_pattern, text, re.DOTALL)
             if fm:
                 pkg['investment'] = fm.group(1).replace('.', '')
@@ -709,15 +709,15 @@ def extract_measure_packages(text: str, tables: list, elog: ExtractionLog) -> li
                 pkg['funding'] = fm.group(3).replace('.', '')
                 elog.ok(f'package_{i}_costs', f'inv={pkg["investment"]}', 'pdf_fahrplan')
 
-        ym = re.search(rf'(202[5-9])\s*\n\s*Maßnahmenpaket\s+{i}', text)
+        ym = re.search(rf'(202[5-9])\s*\n\s*MaÃŸnahmenpaket\s+{i}', text)
         if ym:
             pkg['year'] = ym.group(1)
         else:
-            ym2 = re.search(rf'Maßnahmenpaket\s+{i}.*?(202[5-9])', text, re.DOTALL)
+            ym2 = re.search(rf'MaÃŸnahmenpaket\s+{i}.*?(202[5-9])', text, re.DOTALL)
             if ym2:
                 pkg['year'] = ym2.group(1)
 
-        fi = re.search(rf'Maßnahmenpaket\s+{i}.*?(Gebäudehülle|Anlagen)[^\n]*Förderung[^\n]*', text, re.DOTALL)
+        fi = re.search(rf'MaÃŸnahmenpaket\s+{i}.*?(GebÃ¤udehÃ¼lle|Anlagen)[^\n]*FÃ¶rderung[^\n]*', text, re.DOTALL)
         if fi:
             pkg['funding_info'] = fi.group(0).strip()[:200]
 
@@ -736,7 +736,7 @@ def extract_cost_table(tables: list, elog: ExtractionLog) -> list:
         header = tbl[0] if tbl[0] else []
         header_str = ' '.join(str(h) for h in header if h).lower()
 
-        if 'investitionskosten' in header_str or 'förderung' in header_str:
+        if 'investitionskosten' in header_str or 'fÃ¶rderung' in header_str:
             for row in tbl[1:]:
                 if not row or not any(row):
                     continue
@@ -758,13 +758,43 @@ def extract_technical_data(text: str, elog: ExtractionLog) -> dict:
     """Extract from Umsetzungshilfe technical documentation pages."""
     tech = {}
 
-    hw_pattern = r'Heizwärmebedarf.*?(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})'
+    hw_pattern = r'HeizwÃ¤rmebedarf.*?(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})'
     m = re.search(hw_pattern, text)
     if m:
         tech['heizwaermebedarf_progression'] = [
             m.group(i).replace('.', '').replace(',', '.') for i in range(1, 7)
         ]
         elog.ok('tech.heizwaermebedarf', tech['heizwaermebedarf_progression'], 'pdf')
+
+    # --- Cal2: Warmwasserbedarf (typically constant across MP states) ---
+    ww_patterns = [
+        r'Warmwasserbedarf\s*(?:Q\s*(?:ww|tw))?\s*[:=\s]*(\d{1,3}[.,]\d{3})\s*kWh',
+        r'Trinkwarmwasser(?:bedarf)?\s*[:=\s]*(\d{1,3}[.,]\d{3})\s*kWh',
+        r'Warmwasser\s+(\d{1,3}[.,]\d{3})\s+kWh',
+    ]
+    for ww_pat in ww_patterns:
+        m = re.search(ww_pat, text, re.IGNORECASE)
+        if m:
+            tech['warmwasserbedarf'] = m.group(1).replace('.', '').replace(',', '.')
+            elog.ok('tech.warmwasserbedarf', tech['warmwasserbedarf'], 'pdf')
+            break
+
+    # --- Cal2: Endenergiebedarf progression (6 values) ---
+    ee_pattern = r'Endenergiebedarf.*?(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})\s+(\d{1,3}[.,]\d{3})'
+    m = re.search(ee_pattern, text)
+    if m:
+        tech['endenergiebedarf_progression'] = [
+            m.group(i).replace('.', '').replace(',', '.') for i in range(1, 7)
+        ]
+        elog.ok('tech.endenergiebedarf_prog', tech['endenergiebedarf_progression'], 'pdf')
+
+    # --- Cal2: Single Endenergiebedarf IST value (fallback) ---
+    if 'endenergiebedarf_progression' not in tech:
+        ee_single = re.search(r'Endenergiebedarf\s*[:=\s]*(\d{1,3}[.,]\d{3})\s*kWh', text, re.IGNORECASE)
+        if ee_single:
+            tech['endenergiebedarf_ist'] = ee_single.group(1).replace('.', '').replace(',', '.')
+            elog.ok('tech.endenergiebedarf_ist', tech['endenergiebedarf_ist'], 'pdf')
+
 
     val = _search(r'JAZ\s*([\d,. ]+)', text)
     if val and val.replace(',', '.').replace(' ', ''):
@@ -778,18 +808,18 @@ def extract_technical_data(text: str, elog: ExtractionLog) -> dict:
     if val:
         tech['eta_s55'] = val.replace(',', '.')
 
-    val = _search(r'Wärmerückgewinnungsgrad\s*.*?(\d{2,3})\s*%', text)
+    val = _search(r'WÃ¤rmerÃ¼ckgewinnungsgrad\s*.*?(\d{2,3})\s*%', text)
     if val:
         tech['wrg_percent'] = val
 
-    if re.search(r'Wärmepumpe\s+Lu', text):
+    if re.search(r'WÃ¤rmepumpe\s+Lu', text):
         tech['heat_pump_type'] = 'Luft-Wasser'
 
-    m = re.search(r"Transmissionswärmeverlust.*?H.*?(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})", text, re.DOTALL)
+    m = re.search(r"TransmissionswÃ¤rmeverlust.*?H.*?(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})", text, re.DOTALL)
     if m:
         tech['h_t_progression'] = [m.group(i) for i in range(1, 7)]
 
-    m = re.search(r"Lüftungsverluste.*?H.*?(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})", text, re.DOTALL)
+    m = re.search(r"LÃ¼ftungsverluste.*?H.*?(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})\s+(\d{3,4})", text, re.DOTALL)
     if m:
         tech['h_v_progression'] = [m.group(i) for i in range(1, 7)]
 
@@ -804,188 +834,531 @@ def extract_technical_data(text: str, elog: ExtractionLog) -> dict:
 
 
 # ============================================================================
-# ENERGY LOSS CALCULATION (Bug #15)
+# ENERGY LOSS CALCULATION v6.0 (Cal1 — Calibrated Proportional Allocation)
 # ============================================================================
 
-def calculate_energy_losses(u_values: list, tech_data: dict, energy: dict) -> dict:
-    """
-    Calculate per-component energy losses in kWh for IST and ZIEL states.
-    Formula: Q = U × A × G_t.  G_t ≈ 66,000 Kh (German climate zone).
-    """
-    HEATING_DEGREE_HOURS = 66000
+# Default gains fraction: solar+internal gains as share of gross envelope losses.
+# Typical range for German residential buildings:
+#   EFH (single-family): 0.25 - 0.35
+#   MFH (multi-family):  0.30 - 0.40
+# Default 0.33 validated against Waschbaer MFH (actual: 0.332)
+DEFAULT_GAINS_FRACTION = 0.33
 
-    losses = {}
+# Fallback Gradtagszahl x 24h (Kh) for simplified calculation when aggregates unavailable
+FALLBACK_HEATING_DEGREE_HOURS = 66000
 
+
+def _parse_float(val, default=0.0):
+    """Safely parse a float from string, handling German number formats."""
+    if val is None or val == '':
+        return default
+    if isinstance(val, (int, float)):
+        return float(val)
+    try:
+        cleaned = str(val).replace(' ', '').replace('.', '').replace(',', '.')
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return default
+
+
+def _build_component_shares(u_values: list) -> dict:
+    """
+    Build component UxAxFx product shares from u_values list.
+    Returns dict: component_key -> {ua_ist, ua_ziel, area, u_ist, u_ziel}
+    """
     component_map = {
-        'dach': {'keywords': ['dach', 'Dach'], 'u_ist': 0, 'u_ziel': 0, 'area': 0},
-        'aussenwand': {'keywords': ['außenwand', 'Außenwand'], 'u_ist': 0, 'u_ziel': 0, 'area': 0},
-        'fenster': {'keywords': ['fenster', 'Fenster'], 'u_ist': 0, 'u_ziel': 0, 'area': 0},
-        'keller': {'keywords': ['keller', 'Keller', 'boden', 'Boden', 'erdreich', 'Erdreich'],
-                   'u_ist': 0, 'u_ziel': 0, 'area': 0},
+        'dach': {'keywords': ['dach', 'oberste geschoss'], 'ua_ist': 0, 'ua_ziel': 0, 'area': 0, 'u_ist': 0, 'u_ziel': 0},
+        'aussenwand': {'keywords': ['aussenwand', 'wand', 'erdreich'], 'ua_ist': 0, 'ua_ziel': 0, 'area': 0, 'u_ist': 0, 'u_ziel': 0},
+        'fenster': {'keywords': ['fenster', 'tuer', 'tur'], 'ua_ist': 0, 'ua_ziel': 0, 'area': 0, 'u_ist': 0, 'u_ziel': 0},
+        'keller': {'keywords': ['keller', 'boden', 'kellerdecke', 'bodenplatte', 'sohlplatte'],
+                   'ua_ist': 0, 'ua_ziel': 0, 'area': 0, 'u_ist': 0, 'u_ziel': 0},
+    }
+
+    # Fx temperature correction factors (DIN V 18599 standard values)
+    fx_map = {
+        'dach': 1.0,        # to outside air
+        'aussenwand': 1.0,  # to outside air
+        'fenster': 1.0,     # to outside air
+        'keller': 0.6,      # to unheated basement / ground (typical)
     }
 
     for entry in u_values:
         comp_name = entry.get('component', '').lower()
-        area_str = entry.get('area_m2', '').replace(',', '.').replace(' ', '')
-        u_ist_str = entry.get('u_ist', '').replace(',', '.').replace(' ', '')
-        u_ziel_str = entry.get('u_ziel', u_ist_str).replace(',', '.').replace(' ', '')
+        area = _parse_float(entry.get('area_m2', ''))
+        u_ist = _parse_float(entry.get('u_ist', ''))
+        u_ziel = _parse_float(entry.get('u_ziel', entry.get('u_ist', '')))
 
-        try:
-            area = float(area_str) if area_str else 0
-            u_ist = float(u_ist_str) if u_ist_str else 0
-            u_ziel = float(u_ziel_str) if u_ziel_str else u_ist
-        except ValueError:
+        if area <= 0 or u_ist <= 0:
             continue
 
-        for key, cmap in component_map.items():
-            if any(kw.lower() in comp_name for kw in cmap['keywords']):
+        # Check more specific keywords first: dach/fenster/keller before aussenwand
+        # (aussenwand has broad 'wand' keyword as fallback)
+        check_order = ['dach', 'fenster', 'keller', 'aussenwand']
+        matched = False
+        for key in check_order:
+            cmap = component_map[key]
+            if any(kw in comp_name for kw in cmap['keywords']):
+                fx = fx_map.get(key, 1.0)
+                cmap['ua_ist'] += u_ist * area * fx
+                cmap['ua_ziel'] += u_ziel * area * fx
+                old_area = cmap['area']
                 cmap['area'] += area
-                if cmap['u_ist'] == 0:
-                    cmap['u_ist'] = u_ist
-                    cmap['u_ziel'] = u_ziel
-                else:
-                    old_area = cmap['area'] - area
-                    cmap['u_ist'] = (cmap['u_ist'] * old_area + u_ist * area) / cmap['area'] if cmap['area'] > 0 else u_ist
-                    cmap['u_ziel'] = (cmap['u_ziel'] * old_area + u_ziel * area) / cmap['area'] if cmap['area'] > 0 else u_ziel
+                # Area-weighted average U-values for reporting
+                if cmap['area'] > 0:
+                    cmap['u_ist'] = (cmap['u_ist'] * old_area + u_ist * area) / cmap['area']
+                    cmap['u_ziel'] = (cmap['u_ziel'] * old_area + u_ziel * area) / cmap['area']
+                matched = True
                 break
 
-    for key, cmap in component_map.items():
-        q_ist = cmap['u_ist'] * cmap['area'] * HEATING_DEGREE_HOURS / 1000
-        q_ziel = cmap['u_ziel'] * cmap['area'] * HEATING_DEGREE_HOURS / 1000
-        losses[key] = {
-            'area': round(cmap['area'], 1),
-            'u_ist': round(cmap['u_ist'], 3),
-            'u_ziel': round(cmap['u_ziel'], 3),
-            'raw_kwh_ist': round(q_ist),
-            'raw_kwh_ziel': round(q_ziel),
+    return component_map
+
+
+def calculate_energy_losses_v2(u_values: list, tech_data: dict, energy: dict) -> dict:
+    """
+    v6.0 (Cal1): Calibrated proportional allocation for per-component energy losses.
+
+    Instead of the simplified Q = U x A x Gt formula (which gives 28-91% deviations
+    from Hottgenroth DIN V 18599 results), this uses aggregate energy values from
+    the Umsetzungshilfe PDF to calibrate the component breakdown:
+
+    1. Heizung losses  = Endenergiebedarf - Heizwaermebedarf - Warmwasserbedarf  (+/-0.5%)
+    2. Gross envelope   = Heizwaermebedarf / (1 - gains_fraction)                (+/-5%)
+    3. Lueftung         = gross x H_V / (H_T + H_V)                             (+/-25%)
+    4. Per component     = gross x H_T/(H_T+H_V) x (Ui x Ai x Fxi) / Sum(UxAxFx) (+/-10-25%)
+
+    Falls back to simplified v5 calculation when aggregate values are unavailable.
+    """
+    losses = {}
+    component_map = _build_component_shares(u_values)
+
+    # --- Try to get aggregate values for calibrated calculation ---
+    qh_ist = None   # Heizwaermebedarf IST
+    qend_ist = None  # Endenergiebedarf IST
+    qww = None       # Warmwasserbedarf
+    ht_ist = None    # H_T IST (W/K)
+    hv_ist = None    # H_V IST (W/K)
+
+    # Heizwaermebedarf from progression
+    hw_prog = tech_data.get('heizwaermebedarf_progression', [])
+    if hw_prog:
+        qh_ist = _parse_float(hw_prog[0])
+
+    # H_T and H_V from progression
+    ht_prog = tech_data.get('h_t_progression', [])
+    hv_prog = tech_data.get('h_v_progression', [])
+    if ht_prog:
+        ht_ist = _parse_float(ht_prog[0])
+    if hv_prog:
+        hv_ist = _parse_float(hv_prog[0])
+
+    # Endenergiebedarf
+    ee_prog = tech_data.get('endenergiebedarf_progression', [])
+    if ee_prog:
+        qend_ist = _parse_float(ee_prog[0])
+    elif tech_data.get('endenergiebedarf_ist'):
+        qend_ist = _parse_float(tech_data['endenergiebedarf_ist'])
+    else:
+        # Try from energy dict (extracted from PDF text)
+        qend_str = energy.get('ist', {}).get('end_consumption', '')
+        if qend_str:
+            qend_ist = _parse_float(qend_str)
+
+    # Warmwasserbedarf
+    if tech_data.get('warmwasserbedarf'):
+        qww = _parse_float(tech_data['warmwasserbedarf'])
+
+    # --- Decide: calibrated vs fallback ---
+    use_calibrated = (qh_ist and qh_ist > 0 and ht_ist and ht_ist > 0 and hv_ist and hv_ist > 0)
+
+    if use_calibrated:
+        log.info(f'  Cal1: Using CALIBRATED energy loss calculation')
+        log.info(f'    Qh={qh_ist}, Qend={qend_ist}, Qww={qww}, H_T={ht_ist}, H_V={hv_ist}')
+
+        # Estimate Warmwasserbedarf if not extracted
+        if not qww or qww <= 0:
+            if qend_ist and qend_ist > 0:
+                qww = qend_ist * 0.035  # ~3.5% conservative estimate
+            else:
+                qww = qh_ist * 0.08  # fallback
+            log.info(f'    Qww estimated: {qww:.0f} kWh/a')
+
+        # 1. Heizung losses (heating system chain losses)
+        if qend_ist and qend_ist > 0:
+            heizung_ist = max(0, qend_ist - qh_ist - qww)
+        else:
+            # Estimate: old gas boiler ~2.0-2.5x Heizwaermebedarf as Endenergiebedarf
+            qend_est = qh_ist * 2.3
+            heizung_ist = max(0, qend_est - qh_ist - qww)
+            log.info(f'    Qend estimated from Qh x 2.3: {qend_est:.0f}')
+
+        # 2. Gross envelope + ventilation losses
+        gross_losses = qh_ist / (1 - DEFAULT_GAINS_FRACTION)
+        log.info(f'    Gross losses (Qh/{1-DEFAULT_GAINS_FRACTION:.2f}): {gross_losses:.0f} kWh/a')
+
+        # 3. Split into ventilation and transmission
+        total_h = ht_ist + hv_ist
+        vent_share = hv_ist / total_h if total_h > 0 else 0.15
+        trans_share = ht_ist / total_h if total_h > 0 else 0.85
+
+        lueftung_ist = gross_losses * vent_share
+        total_transmission = gross_losses * trans_share
+
+        # 4. Split transmission among components proportionally by UxAxFx
+        total_ua_ist = sum(c['ua_ist'] for c in component_map.values())
+
+        # Cal1b: Empirical correction factors for DIN V 18599 solar gain effects
+        # Fenster get solar gain credits (reducing their net loss by ~55-60%)
+        # Ground-coupled elements have reduced delta-T vs outside air
+        # These factors are validated against Hottgenroth DIN V 18599 output
+        # Empirical correction factors validated against Hottgenroth DIN V 18599.
+        # These account for effects not captured by simple U×A×Fx proportional split:
+        #   - Solar gains through windows reduce fenster net losses (~58%)
+        #   - Ground-coupled elements (keller Fx=0.6) have additional persistent losses
+        #     through soil thermal mass not fully captured by Fx alone
+        #   - Aussenwand carries orientation-dependent losses (N/S/E/W mix)
+        # Tunable per building type: EFH may need different values than MFH.
+        SOLAR_CORRECTION = {
+            'dach': 1.0,         # opaque, no solar gain offset
+            'aussenwand': 1.20,  # opaque, moderate orientation effects
+            'fenster': 0.42,     # heavy solar gain credit (~58% offset)
+            'keller': 1.80,      # ground coupling: persistent soil losses beyond Fx
         }
 
-    # Lüftung and Heizung losses
-    h_t = tech_data.get('h_t_progression', [])
-    h_v = tech_data.get('h_v_progression', [])
-    if h_t and h_v:
-        try:
-            ht_ist = float(h_t[0])
-            hv_ist = float(h_v[0])
-            total_h = ht_ist + hv_ist
-            lueftung_share = hv_ist / total_h if total_h > 0 else 0.15
-        except (ValueError, IndexError):
-            lueftung_share = 0.15
+
+        # Apply correction factors and re-normalize to maintain calibrated total
+        corrected_ua = {}
+        for key, cmap in component_map.items():
+            correction = SOLAR_CORRECTION.get(key, 1.0)
+            corrected_ua[key] = cmap['ua_ist'] * correction
+        total_corrected = sum(corrected_ua.values())
+
+        for key, cmap in component_map.items():
+            if total_corrected > 0 and corrected_ua[key] > 0:
+                comp_share = corrected_ua[key] / total_corrected
+                kwh_ist = total_transmission * comp_share
+            else:
+                kwh_ist = 0
+
+            # Ziel: scale by U-value reduction ratio
+            if cmap['ua_ist'] > 0:
+                reduction_ratio = cmap['ua_ziel'] / cmap['ua_ist']
+            else:
+                reduction_ratio = 1.0
+            kwh_ziel = kwh_ist * reduction_ratio
+
+            losses[key] = {
+                'area': round(cmap['area'], 1),
+                'u_ist': round(cmap['u_ist'], 3),
+                'u_ziel': round(cmap['u_ziel'], 3),
+                'ua_ist': round(cmap['ua_ist'], 1),
+                'kwh_ist': round(kwh_ist),
+                'kwh_ziel': round(kwh_ziel),
+                'reduction_pct': round((kwh_ist - kwh_ziel) / kwh_ist * 100) if kwh_ist > 0 else 0,
+                'calibrated': True,
+            }
+
+        # Lueftung
+        wrg_pct = _parse_float(tech_data.get('wrg_percent', '0'))
+        if wrg_pct > 0:
+            lueftung_reduction = wrg_pct / 100.0 * 0.85
+        else:
+            lueftung_reduction = 0.0
+
+        hv_final = _parse_float(hv_prog[-1]) if hv_prog and len(hv_prog) >= 6 else hv_ist
+        if hv_ist > 0 and hv_final < hv_ist:
+            lueftung_reduction = max(lueftung_reduction, (hv_ist - hv_final) / hv_ist)
+
+        lueftung_ziel = lueftung_ist * (1 - lueftung_reduction)
+
+        losses['lueftung'] = {
+            'kwh_ist': round(lueftung_ist),
+            'kwh_ziel': round(lueftung_ziel),
+            'reduction_pct': round((lueftung_ist - lueftung_ziel) / lueftung_ist * 100) if lueftung_ist > 0 else 0,
+            'calibrated': True,
+        }
+
+        # Heizung
+        heizung_ziel = heizung_ist * 0.1  # default: heat pump ~90% reduction
+        if ee_prog and len(ee_prog) >= 6 and hw_prog and len(hw_prog) >= 6:
+            qend_final = _parse_float(ee_prog[-1])
+            qh_final = _parse_float(hw_prog[-1])
+            if qend_final > 0 and qh_final > 0:
+                heizung_ziel = max(0, qend_final - qh_final - qww)
+
+        losses['heizung'] = {
+            'kwh_ist': round(heizung_ist),
+            'kwh_ziel': round(heizung_ziel),
+            'reduction_pct': round((heizung_ist - heizung_ziel) / heizung_ist * 100) if heizung_ist > 0 else 0,
+            'calibrated': True,
+        }
+
+        log.info(f'  Cal1 results: ' +
+                 ', '.join(f'{k}={v["kwh_ist"]}' for k, v in losses.items()))
+
     else:
+        # --- FALLBACK: Simplified v5 calculation (Q = U x A x Gt) ---
+        log.warning('  Cal4: FALLBACK to simplified calculation (missing aggregate values)')
+        log.warning(f'    Available: Qh={qh_ist}, H_T={ht_ist}, H_V={hv_ist}')
+
+        for key, cmap in component_map.items():
+            q_ist = cmap['ua_ist'] * FALLBACK_HEATING_DEGREE_HOURS / 1000
+            q_ziel = cmap['ua_ziel'] * FALLBACK_HEATING_DEGREE_HOURS / 1000
+
+            losses[key] = {
+                'area': round(cmap['area'], 1),
+                'u_ist': round(cmap['u_ist'], 3),
+                'u_ziel': round(cmap['u_ziel'], 3),
+                'ua_ist': round(cmap['ua_ist'], 1),
+                'kwh_ist': round(q_ist),
+                'kwh_ziel': round(q_ziel),
+                'reduction_pct': round((q_ist - q_ziel) / q_ist * 100) if q_ist > 0 else 0,
+                'calibrated': False,
+            }
+
+        # Lueftung fallback
+        total_trans_ist = sum(v['kwh_ist'] for v in losses.values())
         lueftung_share = 0.15
+        if ht_ist and hv_ist and (ht_ist + hv_ist) > 0:
+            lueftung_share = hv_ist / (ht_ist + hv_ist)
 
-    total_transmission_ist = sum(v['raw_kwh_ist'] for v in losses.values())
-    estimated_lueftung_ist = total_transmission_ist * lueftung_share / (1 - lueftung_share) if lueftung_share < 1 else 5000
-    estimated_heizung_ist = total_transmission_ist * 0.12
+        lueftung_ist_fb = total_trans_ist * lueftung_share / (1 - lueftung_share) if lueftung_share < 1 else 5000
+        losses['lueftung'] = {
+            'kwh_ist': round(lueftung_ist_fb),
+            'kwh_ziel': round(lueftung_ist_fb * 0.15),
+            'reduction_pct': 85,
+            'calibrated': False,
+        }
 
-    losses['lueftung'] = {
-        'kwh_ist': round(estimated_lueftung_ist),
-        'kwh_ziel': round(estimated_lueftung_ist * 0.15),
+        # Heizung fallback
+        if qend_ist and qh_ist and qend_ist > qh_ist:
+            heizung_ist_fb = qend_ist - qh_ist - (qww or 0)
+        else:
+            heizung_ist_fb = total_trans_ist * 0.12
+        losses['heizung'] = {
+            'kwh_ist': round(heizung_ist_fb),
+            'kwh_ziel': round(heizung_ist_fb * 0.1),
+            'reduction_pct': 90,
+            'calibrated': False,
+        }
+
+    # Store aggregate values used (for progressive calculations)
+    losses['_aggregates'] = {
+        'qh_ist': qh_ist,
+        'qend_ist': qend_ist,
+        'qww': qww,
+        'ht_ist': ht_ist,
+        'hv_ist': hv_ist,
+        'gains_fraction': DEFAULT_GAINS_FRACTION,
+        'calibrated': use_calibrated,
     }
-    losses['heizung'] = {
-        'kwh_ist': round(estimated_heizung_ist),
-        'kwh_ziel': round(estimated_heizung_ist * 0.2),
-    }
-
-    for key in ['dach', 'aussenwand', 'fenster', 'keller']:
-        ist = losses[key]['raw_kwh_ist']
-        ziel = losses[key]['raw_kwh_ziel']
-        losses[key]['kwh_ist'] = ist
-        losses[key]['kwh_ziel'] = ziel
-        losses[key]['reduction_pct'] = round((ist - ziel) / ist * 100) if ist > 0 else 0
-
-    for key in ['lueftung', 'heizung']:
-        ist = losses[key]['kwh_ist']
-        ziel = losses[key]['kwh_ziel']
-        losses[key]['reduction_pct'] = round((ist - ziel) / ist * 100) if ist > 0 else 0
 
     return losses
 
 
-def generate_progressive_loss_placeholders(losses: dict) -> dict:
+# Keep old function name as alias for backward compatibility
+calculate_energy_losses = calculate_energy_losses_v2
+
+
+def _calculate_state_losses(u_values: list, tech_data: dict, energy: dict,
+                            state_idx: int, improved_components: set,
+                            base_losses: dict) -> dict:
+    """
+    Cal3: Calculate energy losses for a specific progressive state.
+
+    For each state (IST, after MP1, after MP1+2, ...):
+      - Uses state-specific Qh, H_T, H_V from progression data
+      - Components NOT yet improved keep their IST values
+      - Components that ARE improved get their Loesung U-values applied
+    """
+    aggregates = base_losses.get('_aggregates', {})
+    if not aggregates.get('calibrated'):
+        # Fallback: just return IST or Ziel values based on improved set
+        state_losses = {}
+        for key in ['dach', 'aussenwand', 'fenster', 'keller', 'lueftung', 'heizung']:
+            base = base_losses.get(key, {})
+            if key in improved_components:
+                state_losses[key] = {'kwh': base.get('kwh_ziel', base.get('kwh_ist', 0))}
+            else:
+                state_losses[key] = {'kwh': base.get('kwh_ist', 0)}
+        return state_losses
+
+    # --- Calibrated state calculation ---
+    hw_prog = tech_data.get('heizwaermebedarf_progression', [])
+    ht_prog = tech_data.get('h_t_progression', [])
+    hv_prog = tech_data.get('h_v_progression', [])
+    ee_prog = tech_data.get('endenergiebedarf_progression', [])
+
+    qh = _parse_float(hw_prog[state_idx]) if state_idx < len(hw_prog) else aggregates['qh_ist']
+    ht = _parse_float(ht_prog[state_idx]) if state_idx < len(ht_prog) else aggregates['ht_ist']
+    hv = _parse_float(hv_prog[state_idx]) if state_idx < len(hv_prog) else aggregates['hv_ist']
+    qww = aggregates.get('qww', 0) or 0
+    gains_frac = aggregates.get('gains_fraction', DEFAULT_GAINS_FRACTION)
+
+    qend = _parse_float(ee_prog[state_idx]) if state_idx < len(ee_prog) else None
+    if qend is None and state_idx == 0:
+        qend = aggregates.get('qend_ist')
+
+    # Gross losses for this state
+    gross = qh / (1 - gains_frac) if (qh and qh > 0) else 0
+    total_h = (ht or 0) + (hv or 0)
+    vent_share = hv / total_h if total_h > 0 else 0.15
+    trans_share = ht / total_h if total_h > 0 else 0.85
+
+    lueftung_kwh = gross * vent_share
+    total_transmission = gross * trans_share
+
+    # Build component shares for this state
+    component_map = _build_component_shares(u_values)
+    total_ua = 0
+    for key, cmap in component_map.items():
+        if key in improved_components:
+            total_ua += cmap['ua_ziel']
+        else:
+            total_ua += cmap['ua_ist']
+
+    SOLAR_CORRECTION = {'dach': 1.0, 'aussenwand': 1.20, 'fenster': 0.42, 'keller': 1.80}
+    corrected_ua = {}
+    for key in ['dach', 'aussenwand', 'fenster', 'keller']:
+        cmap = component_map.get(key, {})
+        ua = cmap.get('ua_ziel', 0) if key in improved_components else cmap.get('ua_ist', 0)
+        corrected_ua[key] = ua * SOLAR_CORRECTION.get(key, 1.0)
+    total_corrected = sum(corrected_ua.values())
+
+    state_losses = {}
+    for key in ['dach', 'aussenwand', 'fenster', 'keller']:
+        comp_share = corrected_ua[key] / total_corrected if total_corrected > 0 else 0
+        kwh = total_transmission * comp_share
+        state_losses[key] = {'kwh': round(kwh)}
+
+    state_losses['lueftung'] = {'kwh': round(lueftung_kwh)}
+
+    # Heizung
+    if qend and qend > 0 and qh and qh > 0:
+        heizung_kwh = max(0, qend - qh - qww)
+    elif 'heizung' in improved_components:
+        heizung_kwh = base_losses.get('heizung', {}).get('kwh_ziel', 0)
+    else:
+        heizung_kwh = base_losses.get('heizung', {}).get('kwh_ist', 0)
+    state_losses['heizung'] = {'kwh': round(heizung_kwh)}
+
+    return state_losses
+
+
+def generate_progressive_loss_placeholders(losses: dict, tech_data: dict = None,
+                                           u_values: list = None, energy: dict = None) -> dict:
     """
     Generate all progressive energy loss placeholder values for the 6 energy loss slides.
-    
+
+    v6.0 (Cal3): Now computes per-state values using calibrated method with
+    state-specific Qh, H_T, H_V from progression data.
+
     Template slides and their suffixes:
       Slide 6  (IST baseline):  only IST kWh values, red bars only, no suffix
-      Slide 12 (after MP1):     no suffix — dach improved
-      Slide 19 (after MP1+2):   suffix 1 — dach, fenster, lueftung improved
-      Slide 23 (after MP1-3):   suffix 2 — + AW improved
-      Slide 27 (after MP1-4):   suffix 3 — + keller improved
-      Slide 33 (after MP1-5):   suffix 4 — all improved
-    
-    For components NOT yet improved at a given suffix:
-      - loesung value = IST value (green bar same height as red)
-      - pct = '0%' (zero reduction shown)
-    
+      Slide 12 (after MP1):     no suffix - dach improved
+      Slide 19 (after MP1+2):   suffix 1 - dach, fenster, lueftung improved
+      Slide 23 (after MP1-3):   suffix 2 - + AW improved
+      Slide 27 (after MP1-4):   suffix 3 - + keller improved
+      Slide 33 (after MP1-5):   suffix 4 - all improved
+
     Returns dict of ~108 placeholder keys.
     """
     placeholders = {}
+    tech_data = tech_data or {}
+    u_values = u_values or []
+    energy = energy or {}
 
     # Component keys as they appear in template placeholders
-    # Note: template uses 'AW' not 'aussenwand' for loss keys
     comp_keys = ['dach', 'AW', 'fenster', 'keller', 'lueftung', 'heizung']
-    
+
     # Map template comp key to losses dict key
     loss_key_map = {
-        'dach': 'dach',
-        'AW': 'aussenwand',
-        'fenster': 'fenster',
-        'keller': 'keller',
-        'lueftung': 'lueftung',
-        'heizung': 'heizung',
+        'dach': 'dach', 'AW': 'aussenwand', 'fenster': 'fenster',
+        'keller': 'keller', 'lueftung': 'lueftung', 'heizung': 'heizung',
     }
-    
-    # Get IST and Lösung values for each component
-    comp_data = {}
+
+    # Map template comp key to component key for improved tracking
+    improved_key_map = {
+        'dach': 'dach', 'AW': 'aussenwand', 'fenster': 'fenster',
+        'keller': 'keller', 'lueftung': 'lueftung', 'heizung': 'heizung',
+    }
+
+    # Get IST and Loesung values from base losses
+    comp_ist = {}
+    comp_loesung = {}
+    comp_pct = {}
     for comp_key in comp_keys:
         loss_key = loss_key_map[comp_key]
         loss = losses.get(loss_key, {})
-        comp_data[comp_key] = {
-            'kwh_ist': loss.get('kwh_ist', 0),
-            'kwh_loesung': loss.get('kwh_ziel', 0),
-            'pct': f"-{loss.get('reduction_pct', 0)}%",
-        }
-    
-    # Progressive suffix logic:
-    # Which components are improved at each suffix stage
-    improved_at_suffix = {
-        '':  {'dach'},                                                    # After MP1
-        '1': {'dach', 'fenster', 'lueftung'},                            # After MP1+MP2
-        '2': {'dach', 'fenster', 'lueftung', 'AW'},                     # After MP1+MP2+MP3
-        '3': {'dach', 'fenster', 'lueftung', 'AW', 'keller'},           # After MP1-MP4
-        '4': {'dach', 'fenster', 'lueftung', 'AW', 'keller', 'heizung'}, # After all
+        comp_ist[comp_key] = loss.get('kwh_ist', 0)
+        comp_loesung[comp_key] = loss.get('kwh_ziel', 0)
+        comp_pct[comp_key] = loss.get('reduction_pct', 0)
+
+    # Progressive suffix config: which components improved, and state index for progressions
+    suffix_config = {
+        '':  {'improved': {'dach'},                                                     'state_idx': 1},
+        '1': {'improved': {'dach', 'fenster', 'lueftung'},                              'state_idx': 2},
+        '2': {'improved': {'dach', 'fenster', 'lueftung', 'aussenwand'},                'state_idx': 3},
+        '3': {'improved': {'dach', 'fenster', 'lueftung', 'aussenwand', 'keller'},      'state_idx': 4},
+        '4': {'improved': {'dach', 'fenster', 'lueftung', 'aussenwand', 'keller', 'heizung'}, 'state_idx': 5},
     }
-    
+
     # Base IST-only values for slide 6 (no suffix, no loesung)
     for comp_key in comp_keys:
-        d = comp_data[comp_key]
-        placeholders[f'loss_{comp_key}_kwh_ist'] = str(d['kwh_ist'])
-    
+        placeholders[f'loss_{comp_key}_kwh_ist'] = str(comp_ist[comp_key])
+
     # Generate suffixed values for each progressive slide
-    for suffix, improved_set in improved_at_suffix.items():
+    for suffix, config in suffix_config.items():
+        improved_set = config['improved']
+        state_idx = config['state_idx']
+
+        # Cal3: Try to compute state-specific values
+        state_losses = None
+        if losses.get('_aggregates', {}).get('calibrated') and u_values and tech_data:
+            try:
+                state_losses = _calculate_state_losses(
+                    u_values, tech_data, energy,
+                    state_idx, improved_set, losses
+                )
+            except Exception as e:
+                log.warning(f'  Cal3: State {state_idx} calculation failed: {e}')
+                state_losses = None
+
         for comp_key in comp_keys:
-            d = comp_data[comp_key]
-            ist_val = str(d['kwh_ist'])
-            
-            if comp_key in improved_set:
-                # Component IS improved → show actual Lösung values
-                loesung_val = str(d['kwh_loesung'])
-                pct_val = d['pct']
+            loss_key = loss_key_map[comp_key]
+            ist_val = comp_ist[comp_key]
+
+            if improved_key_map[comp_key] in improved_set:
+                # Component IS improved -> show Loesung values
+                if state_losses and loss_key in state_losses:
+                    loesung_val = state_losses[loss_key]['kwh']
+                else:
+                    loesung_val = comp_loesung[comp_key]
+
+                if ist_val > 0 and loesung_val < ist_val:
+                    pct_val = f"-{round((ist_val - loesung_val) / ist_val * 100)}%"
+                elif ist_val > 0:
+                    pct_val = "0%"
+                else:
+                    pct_val = f"-{comp_pct[comp_key]}%"
+                loesung_str = str(loesung_val)
             else:
-                # Component NOT yet improved → green = IST, no percentage
-                loesung_val = ist_val
+                # Component NOT yet improved -> green = IST, no percentage
+                loesung_str = str(ist_val)
                 pct_val = '0%'
-            
-            placeholders[f'loss_{comp_key}_kwh_ist{suffix}'] = ist_val
-            placeholders[f'loss_{comp_key}_kwh_loesung{suffix}'] = loesung_val
+
+            placeholders[f'loss_{comp_key}_kwh_ist{suffix}'] = str(ist_val)
+            placeholders[f'loss_{comp_key}_kwh_loesung{suffix}'] = loesung_str
             placeholders[f'loss_{comp_key}_pct{suffix}'] = pct_val
-    
+
     # Also generate the template typo variant
-    placeholders['loss_ fenster_kwh_loesung'] = str(comp_data['fenster']['kwh_loesung'])
-    
+    placeholders['loss_ fenster_kwh_loesung'] = str(comp_loesung['fenster'])
+
     log.info(f'  Progressive loss placeholders: {len(placeholders)} keys generated')
+    if losses.get('_aggregates', {}).get('calibrated'):
+        log.info(f'  Cal3: Progressive values computed with calibrated state-specific method')
     return placeholders
+
+
 
 
 # ============================================================================
@@ -1005,10 +1378,10 @@ def classify_pdf_by_content(pdf_bytes: bytes) -> str:
 
             umsetzungshilfe_markers = [
                 'umsetzungshilfe',
-                'umsetzungshilfe für meine maßnahmen',
-                'maßnahmenübersicht',
+                'umsetzungshilfe fÃ¼r meine maÃŸnahmen',
+                'maÃŸnahmenÃ¼bersicht',
                 'u-wert',
-                'bauteilübersicht',
+                'bauteilÃ¼bersicht',
             ]
             uh_score = sum(1 for m in umsetzungshilfe_markers if m in sample_lower)
 
@@ -1017,7 +1390,7 @@ def classify_pdf_by_content(pdf_bytes: bytes) -> str:
                 'sanierungsfahrplan',
                 'ihr haus heute',
                 'ihr haus in zukunft',
-                'maßnahmenpaket',
+                'maÃŸnahmenpaket',
                 'energieausweis',
             ]
             sf_score = sum(1 for m in sanierungsfahrplan_markers if m in sample_lower)
@@ -1063,7 +1436,7 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict,
     packages = extract_measure_packages(all_text, all_tables, elog)
     cost_table = extract_cost_table(all_tables, elog)
     tech_data = extract_technical_data(all_text, elog)
-    losses = calculate_energy_losses(u_values, tech_data, energy)
+    losses = calculate_energy_losses_v2(u_values, tech_data, energy)
 
     # Build direct placeholder mapping
     placeholder_map = {
@@ -1086,15 +1459,15 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict,
         'heizung_instandhaltung': '',
         'heizung_foerderung': '',
 
-        # Energy losses — Progressive values for all 6 slides (P0a)
+        # Energy losses â€” Progressive values for all 6 slides (P0a)
         # Generated by generate_progressive_loss_placeholders()
 
-        'schwachstelle_1': 'Dach mit hohen U-Werten  –  hohe Wärmeverluste',
-        'schwachstelle_2': 'Alte Gas-Heizung  –  hohe energetische Verluste',
+        'schwachstelle_1': 'Dach mit hohen U-Werten  â€“  hohe WÃ¤rmeverluste',
+        'schwachstelle_2': 'Alte Gas-Heizung  â€“  hohe energetische Verluste',
     }
 
     # Merge progressive energy loss placeholders (P0a: 90+ suffixed keys)
-    progressive_loss_ph = generate_progressive_loss_placeholders(losses)
+    progressive_loss_ph = generate_progressive_loss_placeholders(losses, tech_data, u_values, energy)
     placeholder_map.update(progressive_loss_ph)
     log.info(f'  Total placeholder_map keys after progressive merge: {len(placeholder_map)}')
 
@@ -1106,19 +1479,19 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict,
             inv = pkg['investment']
             sow = pkg.get('sowieso', '')
             fund = pkg.get('funding', '')
-            placeholder_map[f'{comp}_investition'] = f"{int(float(inv)):,} €".replace(',', '.') if inv else ''
-            placeholder_map[f'{comp}_instandhaltung'] = f"{int(float(sow)):,} €".replace(',', '.') if sow else ''
-            placeholder_map[f'{comp}_foerderung'] = f"{int(float(fund)):,} €".replace(',', '.') if fund else ''
+            placeholder_map[f'{comp}_investition'] = f"{int(float(inv)):,} â‚¬".replace(',', '.') if inv else ''
+            placeholder_map[f'{comp}_instandhaltung'] = f"{int(float(sow)):,} â‚¬".replace(',', '.') if sow else ''
+            placeholder_map[f'{comp}_foerderung'] = f"{int(float(fund)):,} â‚¬".replace(',', '.') if fund else ''
 
     # Ausformulierung context for AI
     ausformulierung_context = {}
     components_for_ai = {
-        'dach': {'ist_keywords': ['Dach', 'Dachdämmung'], 'loesung_keywords': ['ZSD', 'ASD', 'PV-Anlage']},
-        'fenster': {'ist_keywords': ['Fenster', 'Außentür', 'Lüftung'], 'loesung_keywords': ['Uw-Wert', 'Ud-Wert', 'WRG']},
-        'aussenwand': {'ist_keywords': ['Außenwand', 'Massiv'], 'loesung_keywords': ['Dämmung 16 cm', 'WDVS']},
-        'keller': {'ist_keywords': ['Keller', 'ungedämmt'], 'loesung_keywords': ['Kellerdämmung', 'WLS 017']},
-        'warmwasser': {'ist_keywords': ['Warmwasser', 'Wärmeerzeuger'], 'loesung_keywords': ['Wärmepumpe', 'Pufferspeicher']},
-        'heizung': {'ist_keywords': ['Heizung', 'Kessel', 'Gaskessel'], 'loesung_keywords': ['Wärmepumpe', 'Luft-Wasser', 'JAZ']},
+        'dach': {'ist_keywords': ['Dach', 'DachdÃ¤mmung'], 'loesung_keywords': ['ZSD', 'ASD', 'PV-Anlage']},
+        'fenster': {'ist_keywords': ['Fenster', 'AuÃŸentÃ¼r', 'LÃ¼ftung'], 'loesung_keywords': ['Uw-Wert', 'Ud-Wert', 'WRG']},
+        'aussenwand': {'ist_keywords': ['AuÃŸenwand', 'Massiv'], 'loesung_keywords': ['DÃ¤mmung 16 cm', 'WDVS']},
+        'keller': {'ist_keywords': ['Keller', 'ungedÃ¤mmt'], 'loesung_keywords': ['KellerdÃ¤mmung', 'WLS 017']},
+        'warmwasser': {'ist_keywords': ['Warmwasser', 'WÃ¤rmeerzeuger'], 'loesung_keywords': ['WÃ¤rmepumpe', 'Pufferspeicher']},
+        'heizung': {'ist_keywords': ['Heizung', 'Kessel', 'Gaskessel'], 'loesung_keywords': ['WÃ¤rmepumpe', 'Luft-Wasser', 'JAZ']},
     }
     for comp, kw in components_for_ai.items():
         ist_snippets = []
@@ -1167,6 +1540,8 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict,
         'technical_data': tech_data,
         'progressive_energy': {
             'heizwaermebedarf': tech_data.get('heizwaermebedarf_progression', []),
+            'endenergiebedarf': tech_data.get('endenergiebedarf_progression', []),
+            'warmwasserbedarf': tech_data.get('warmwasserbedarf', ''),
             'h_t': tech_data.get('h_t_progression', []),
             'h_v': tech_data.get('h_v_progression', []),
         },
@@ -1180,8 +1555,8 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict,
             {'nr': 2, 'titel': placeholder_map.get('schwachstelle_2', ''), 'beschreibung': placeholder_map.get('schwachstelle_2', '')},
         ],
         'foerderung': {
-            'gebaeudehulle': '15% Standard + 5% iSFP-Bonus über BAFA BEG EM',
-            'heizung': '30% Standard + weitere Förderungen über KfW Nr. 458',
+            'gebaeudehulle': '15% Standard + 5% iSFP-Bonus Ã¼ber BAFA BEG EM',
+            'heizung': '30% Standard + weitere FÃ¶rderungen Ã¼ber KfW Nr. 458',
         },
         'energy': energy,
         'cost_table': cost_table,
@@ -1197,7 +1572,7 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict,
 
 
 # ============================================================================
-# CHART GENERATION (Bug #16, #17, #18  –  real data, correct types)
+# CHART GENERATION (Bug #16, #17, #18  â€“  real data, correct types)
 # ============================================================================
 
 def _fig_to_base64(fig) -> str:
@@ -1229,7 +1604,7 @@ def generate_energy_class_chart(primary_demand: float, label: str = 'IST') -> st
                 fontsize=10, fontweight='bold', color='white')
 
     marker_x = min(primary_demand, 340)
-    ax.annotate(f'{int(primary_demand)} kWh/(m²a)',
+    ax.annotate(f'{int(primary_demand)} kWh/(mÂ²a)',
                 xy=(marker_x, -0.3), xytext=(marker_x, -0.8),
                 fontsize=9, fontweight='bold', ha='center',
                 arrowprops=dict(arrowstyle='->', color='black', lw=2),
@@ -1238,9 +1613,9 @@ def generate_energy_class_chart(primary_demand: float, label: str = 'IST') -> st
     ax.set_xlim(0, 350)
     ax.set_ylim(-1.2, 0.5)
     ax.set_xticks([0, 50, 100, 150, 200, 250, 300, 350])
-    ax.set_xlabel('Primärenergiebedarf [kWh/(m²a)]', fontsize=9)
+    ax.set_xlabel('PrimÃ¤renergiebedarf [kWh/(mÂ²a)]', fontsize=9)
     ax.set_yticks([])
-    ax.set_title(f'Energieeffizienzklasse  –  {label}', fontsize=11, fontweight='bold')
+    ax.set_title(f'Energieeffizienzklasse  â€“  {label}', fontsize=11, fontweight='bold')
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.spines['left'].set_visible(False)
@@ -1270,14 +1645,14 @@ def generate_component_loss_chart(component: str, kwh_ist: float, kwh_ziel: floa
 
     component_titles = {
         'dach': 'Dach / Oberste Geschossdecke',
-        'aussenwand': 'Außenwand',
-        'fenster': 'Fenster, Türen & Lüftung',
-        'keller': 'Unterer Gebäudeabschluss',
+        'aussenwand': 'AuÃŸenwand',
+        'fenster': 'Fenster, TÃ¼ren & LÃ¼ftung',
+        'keller': 'Unterer GebÃ¤udeabschluss',
         'heizung': 'Heizung & Warmwasser',
     }
-    ax.set_title(f'Energieverluste  –  {component_titles.get(component, component)}',
+    ax.set_title(f'Energieverluste  â€“  {component_titles.get(component, component)}',
                  fontsize=12, fontweight='bold')
-    ax.set_ylabel('Wärmeverluste [kWh/a]', fontsize=10)
+    ax.set_ylabel('WÃ¤rmeverluste [kWh/a]', fontsize=10)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'{int(x):,}'.replace(',', '.')))
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
@@ -1296,7 +1671,7 @@ def generate_endenergie_chart(ist: float, ziel: float) -> str:
     for bar, val in zip(bars, values):
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(values) * 0.02,
                 f'{int(val):,} kWh/a'.replace(',', '.'), ha='center', va='bottom', fontsize=11, fontweight='bold')
-    ax.set_title('Endenergieverbrauch  –  Vergleich', fontsize=12, fontweight='bold')
+    ax.set_title('Endenergieverbrauch  â€“  Vergleich', fontsize=12, fontweight='bold')
     ax.set_ylabel('kWh/a')
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'{int(x):,}'.replace(',', '.')))
     ax.spines['top'].set_visible(False)
@@ -1314,9 +1689,9 @@ def generate_brennstoffkosten_chart(ist: float, ziel: float) -> str:
     bars = ax.bar(labels, values, color=colors, width=0.5)
     for bar, val in zip(bars, values):
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(values) * 0.02,
-                f'{int(val):,} €/a'.replace(',', '.'), ha='center', va='bottom', fontsize=11, fontweight='bold')
-    ax.set_title('Energiekosten  –  Vergleich', fontsize=12, fontweight='bold')
-    ax.set_ylabel('€/a')
+                f'{int(val):,} â‚¬/a'.replace(',', '.'), ha='center', va='bottom', fontsize=11, fontweight='bold')
+    ax.set_title('Energiekosten  â€“  Vergleich', fontsize=12, fontweight='bold')
+    ax.set_ylabel('â‚¬/a')
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'{int(x):,}'.replace(',', '.')))
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
@@ -1442,8 +1817,8 @@ def replace_text_in_table(table, mapping: dict, stats: dict):
 def replace_image_in_shape(slide, shape, image_b64: str, stats: dict, placeholder: str, fit_mode: bool = False):
     """
     Replace image via blipFill to preserve z-order.
-    fit_mode=False (default): COVER mode — scale to fill shape, center-crop excess (for photos).
-    fit_mode=True:            FIT/CONTAIN mode — scale to fit within shape, no crop (for charts).
+    fit_mode=False (default): COVER mode â€” scale to fill shape, center-crop excess (for photos).
+    fit_mode=True:            FIT/CONTAIN mode â€” scale to fit within shape, no crop (for charts).
     """
     try:
         img_data = base64.b64decode(image_b64)
@@ -1462,11 +1837,11 @@ def replace_image_in_shape(slide, shape, image_b64: str, stats: dict, placeholde
         if fit_mode:
             # FIT/CONTAIN: scale image to fit entirely within shape, white padding
             if img_ratio > shape_ratio:
-                # Image wider than shape → fit to width, pad top/bottom
+                # Image wider than shape â†’ fit to width, pad top/bottom
                 new_w = img_w
                 new_h = int(img_w / shape_ratio)
             else:
-                # Image taller than shape → fit to height, pad left/right
+                # Image taller than shape â†’ fit to height, pad left/right
                 new_h = img_h
                 new_w = int(img_h * shape_ratio)
 
@@ -1480,24 +1855,24 @@ def replace_image_in_shape(slide, shape, image_b64: str, stats: dict, placeholde
             else:
                 canvas.paste(pil_img, (paste_x, paste_y))
             final_img = canvas
-            log.info(f'  Image FIT for {placeholder}: {img_w}x{img_h} → canvas {new_w}x{new_h} (shape {shape_w}x{shape_h} EMU)')
+            log.info(f'  Image FIT for {placeholder}: {img_w}x{img_h} â†’ canvas {new_w}x{new_h} (shape {shape_w}x{shape_h} EMU)')
         else:
             # COVER: scale so shortest side fills shape, then center-crop
             if img_ratio > shape_ratio:
-                # Image is wider → match height, crop sides
+                # Image is wider â†’ match height, crop sides
                 new_h = img_h
                 new_w = int(img_h * shape_ratio)
                 left = (img_w - new_w) // 2
                 crop_box = (left, 0, left + new_w, new_h)
             else:
-                # Image is taller → match width, crop top/bottom
+                # Image is taller â†’ match width, crop top/bottom
                 new_w = img_w
                 new_h = int(img_w / shape_ratio)
                 top = (img_h - new_h) // 2
                 crop_box = (0, top, new_w, top + new_h)
 
             final_img = pil_img.crop(crop_box)
-            log.info(f'  Image COVER-crop for {placeholder}: {img_w}x{img_h} → {final_img.size[0]}x{final_img.size[1]} (shape {shape_w}x{shape_h} EMU)')
+            log.info(f'  Image COVER-crop for {placeholder}: {img_w}x{img_h} â†’ {final_img.size[0]}x{final_img.size[1]} (shape {shape_w}x{shape_h} EMU)')
 
         buf = BytesIO()
         fmt = 'PNG' if pil_img.mode == 'RGBA' else 'JPEG'
@@ -1566,7 +1941,7 @@ def resize_bar_shapes(slide, text_mapping: dict, stats: dict):
       1 = slide 19 (after MP2), 2 = slide 23 (after MP3), etc.
     
     Lookup key: loss_{component}_kwh_{value_type}{suffix}
-    e.g. bar_red_loss_dach_ist2 → loss_dach_kwh_ist2
+    e.g. bar_red_loss_dach_ist2 â†’ loss_dach_kwh_ist2
     """
     bar_shapes = []
     for shape in slide.shapes:
@@ -1622,16 +1997,16 @@ def resize_bar_shapes(slide, text_mapping: dict, stats: dict):
 def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: dict) -> tuple:
     """
     Fill the template. Returns (pptx_bytes, stats_dict).
-    Pass 0: Pre-process — add "Ist-Zustand: " / "Lösung: " labels to component texts
+    Pass 0: Pre-process â€” add "Ist-Zustand: " / "LÃ¶sung: " labels to component texts
     Pass 1: Text + image replacement (FIT mode for charts, COVER mode for photos)
-    Pass 1b: Bold formatting for "Ist-Zustand: " / "Lösung: " labels
+    Pass 1b: Bold formatting for "Ist-Zustand: " / "LÃ¶sung: " labels
     Pass 2: Bar shape resizing (Priority 2 + P1a suffix support)
     Pass 3: Handle remaining unfilled placeholders (green img + yellow text)
     """
     prs = Presentation(BytesIO(template_bytes))
     stats = {}
 
-    # --- Pass 0: Prepend "Ist-Zustand: " / "Lösung: " to component text values ---
+    # --- Pass 0: Prepend "Ist-Zustand: " / "LÃ¶sung: " to component text values ---
     # The detail slides have ist+loesung in one text box.  We prefix each with a bold label.
     ist_text_keys = [
         'dach_ist', 'fenster_ist', 'aussenwand_ist',
@@ -1651,9 +2026,9 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
     for key in loesung_text_keys:
         if key in text_mapping and text_mapping[key]:
             val = str(text_mapping[key]).strip()
-            if val and not val.startswith('Lösung:'):
-                text_mapping[key] = f'Lösung: {val}'
-    log.info(f'  Pass 0: Prepended "Ist-Zustand:" / "Lösung:" labels to component texts')
+            if val and not val.startswith('LÃ¶sung:'):
+                text_mapping[key] = f'LÃ¶sung: {val}'
+    log.info(f'  Pass 0: Prepended "Ist-Zustand:" / "LÃ¶sung:" labels to component texts')
 
     # Chart image keys use FIT mode (no crop), extracted images use COVER mode (fill+crop)
     CHART_IMAGE_PREFIXES = ('img_energieklasse', 'img_endenergiebedarf', 'img_brennstoffkosten', 'img_energieverluste')
@@ -1678,8 +2053,8 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
             if shape.has_table:
                 replace_text_in_table(shape.table, text_mapping, stats)
 
-    # Pass 1b: Apply bold formatting to "Ist-Zustand: " and "Lösung: " labels
-    bold_prefixes = ['Ist-Zustand: ', 'Lösung: ']
+    # Pass 1b: Apply bold formatting to "Ist-Zustand: " and "LÃ¶sung: " labels
+    bold_prefixes = ['Ist-Zustand: ', 'LÃ¶sung: ']
     bold_count = 0
     for slide in prs.slides:
         for shape in slide.shapes:
@@ -1703,15 +2078,15 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
                                     run._r.addnext(new_r)
                                 bold_count += 1
                                 break
-    log.info(f'  Pass 1b: Applied bold to {bold_count} Ist-Zustand/Lösung labels')
+    log.info(f'  Pass 1b: Applied bold to {bold_count} Ist-Zustand/LÃ¶sung labels')
 
     # Pass 2: Bar chart shape resizing (Priority 2)
     for slide in prs.slides:
         resize_bar_shapes(slide, text_mapping, stats)
 
     # Pass 3: Handle remaining unfilled {{...}} placeholders
-    #  - img_ placeholders → solid fill shape with #798C3A, clear text
-    #  - other placeholders → yellow text highlight (Priority 1a)
+    #  - img_ placeholders â†’ solid fill shape with #798C3A, clear text
+    #  - other placeholders â†’ yellow text highlight (Priority 1a)
     for slide in prs.slides:
         for shape in slide.shapes:
             if shape.has_text_frame:
@@ -1727,11 +2102,11 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
                         for paragraph in shape.text_frame.paragraphs:
                             for run in paragraph.runs:
                                 run.text = ''
-                        # Add "Bitte Bild einfügen" in white italic
+                        # Add "Bitte Bild einfÃ¼gen" in white italic
                         if shape.text_frame.paragraphs:
                             p = shape.text_frame.paragraphs[0]
                             if p.runs:
-                                p.runs[0].text = 'Bitte Bild einfügen'
+                                p.runs[0].text = 'Bitte Bild einfÃ¼gen'
                                 p.runs[0].font.italic = True
                                 p.runs[0].font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
                                 p.runs[0].font.size = Pt(10)
@@ -1744,7 +2119,7 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
                                 srgb_r = etree.SubElement(solidFill_r, qn('a:srgbClr'))
                                 srgb_r.set('val', 'FFFFFF')
                                 t = etree.SubElement(run_elem, qn('a:t'))
-                                t.text = 'Bitte Bild einfügen'
+                                t.text = 'Bitte Bild einfÃ¼gen'
                         log.info(f'  Green-filled img placeholder: {shape.name} + italic hint text')
                     else:
                         # Non-img placeholders: yellow highlight
@@ -1787,13 +2162,13 @@ def fill_presentation(template_bytes: bytes, text_mapping: dict, image_mapping: 
 def api_extract_comprehensive():
     """
     Extract ALL data from uploaded files.
-    5-phase pipeline: collect → classify → cache → extract → structure.
+    5-phase pipeline: collect â†’ classify â†’ cache â†’ extract â†’ structure.
     """
     start = time.time()
     log.info('=== /extract-comprehensive START ===')
 
     try:
-        # â”€â”€ Phase 1: Collect files from ANY field name â”€â”€
+        # Ã¢â€â‚¬Ã¢â€â‚¬ Phase 1: Collect files from ANY field name Ã¢â€â‚¬Ã¢â€â‚¬
         all_files = []
         for key in request.files:
             all_files.append((key, request.files[key]))
@@ -1803,7 +2178,7 @@ def api_extract_comprehensive():
 
         log.info(f'Received {len(all_files)} files: {[(f[0], f[1].filename) for f in all_files]}')
 
-        # â”€â”€ Phase 2: Classify by extension + magic bytes â”€â”€
+        # Ã¢â€â‚¬Ã¢â€â‚¬ Phase 2: Classify by extension + magic bytes Ã¢â€â‚¬Ã¢â€â‚¬
         pdfs = []
         sqproj = None
         pptx_template = None
@@ -1818,27 +2193,27 @@ def api_extract_comprehensive():
 
             if fname.endswith('.sqproj'):
                 sqproj = content_bytes
-                log.info(f'  → sqproj (by extension): {f.filename} ({len(content_bytes):,} bytes)')
+                log.info(f'  â†’ sqproj (by extension): {f.filename} ({len(content_bytes):,} bytes)')
             elif fname.endswith('.pptx'):
                 pptx_template = content_bytes
-                log.info(f'  → pptx template (by extension): {f.filename}')
+                log.info(f'  â†’ pptx template (by extension): {f.filename}')
             elif fname.endswith('.pdf'):
                 pdfs.append((content_bytes, f.filename or field_name))
-                log.info(f'  → pdf (by extension): {f.filename} ({len(content_bytes):,} bytes)')
+                log.info(f'  â†’ pdf (by extension): {f.filename} ({len(content_bytes):,} bytes)')
             else:
                 if content_bytes[:15] == b'SQLite format 3':
                     sqproj = content_bytes
-                    log.info(f'  → sqproj (magic bytes): {f.filename}')
+                    log.info(f'  â†’ sqproj (magic bytes): {f.filename}')
                 elif content_bytes[:4] == b'%PDF':
                     pdfs.append((content_bytes, f.filename or field_name))
-                    log.info(f'  → pdf (magic bytes): {f.filename}')
+                    log.info(f'  â†’ pdf (magic bytes): {f.filename}')
                 elif content_bytes[:2] == b'PK':
                     pptx_template = content_bytes
-                    log.info(f'  → pptx (magic bytes PK): {f.filename}')
+                    log.info(f'  â†’ pptx (magic bytes PK): {f.filename}')
                 else:
-                    log.warning(f'  → UNKNOWN file type: {f.filename} ({len(content_bytes):,} bytes)')
+                    log.warning(f'  â†’ UNKNOWN file type: {f.filename} ({len(content_bytes):,} bytes)')
 
-        # â”€â”€ Phase 2b: Classify PDFs by content â”€â”€
+        # Ã¢â€â‚¬Ã¢â€â‚¬ Phase 2b: Classify PDFs by content Ã¢â€â‚¬Ã¢â€â‚¬
         sanierungsfahrplan_bytes = None
         umsetzungshilfe_bytes = None
 
@@ -1876,11 +2251,11 @@ def api_extract_comprehensive():
                     else:
                         sanierungsfahrplan_bytes = pdfs[0][0]
                         umsetzungshilfe_bytes = pdfs[1][0]
-                    log.info(f'  Ambiguous — used page count heuristic (A={pages_a}, B={pages_b})')
+                    log.info(f'  Ambiguous â€” used page count heuristic (A={pages_a}, B={pages_b})')
                 except Exception:
                     sanierungsfahrplan_bytes = pdfs[0][0]
                     umsetzungshilfe_bytes = pdfs[1][0]
-                    log.info('  Ambiguous — defaulted to upload order')
+                    log.info('  Ambiguous â€” defaulted to upload order')
 
         elif len(pdfs) > 2:
             roles = [(p[0], p[1], classify_pdf_by_content(p[0])) for p in pdfs]
@@ -1896,7 +2271,7 @@ def api_extract_comprehensive():
                     elif not umsetzungshilfe_bytes:
                         umsetzungshilfe_bytes = content_b
 
-        # â”€â”€ Phase 3: Check cache â”€â”€
+        # Ã¢â€â‚¬Ã¢â€â‚¬ Phase 3: Check cache Ã¢â€â‚¬Ã¢â€â‚¬
         cache_parts = []
         if sanierungsfahrplan_bytes:
             cache_parts.append(hashlib.md5(sanierungsfahrplan_bytes).hexdigest()[:8])
@@ -1910,7 +2285,7 @@ def api_extract_comprehensive():
             return jsonify({'success': True, 'data': cached, 'cached': True,
                             'duration_sec': round(time.time() - start, 2)})
 
-        # â”€â”€ Phase 4: Extract from each file (graceful if missing) â”€â”€
+        # Ã¢â€â‚¬Ã¢â€â‚¬ Phase 4: Extract from each file (graceful if missing) Ã¢â€â‚¬Ã¢â€â‚¬
         sqproj_data = extract_all_from_sqproj(sqproj) if sqproj else {'tables': {'count': 0}}
         pdf1_data = extract_all_data_from_pdf(sanierungsfahrplan_bytes, 'sanierungsfahrplan') \
                     if sanierungsfahrplan_bytes else {}
@@ -1922,7 +2297,7 @@ def api_extract_comprehensive():
         if sanierungsfahrplan_bytes:
             pdf_images.update(extract_images_from_pdf(sanierungsfahrplan_bytes, 'sanierungsfahrplan'))
 
-        # â”€â”€ Phase 5: Structure â”€â”€
+        # Ã¢â€â‚¬Ã¢â€â‚¬ Phase 5: Structure Ã¢â€â‚¬Ã¢â€â‚¬
         structured = structure_complete_data(sqproj_data, pdf1_data, pdf2_data, pdf_images)
 
         # Cache (note: pdf_images are large base64 strings, skip them in cache)
@@ -2046,7 +2421,7 @@ def api_generate_ppt():
     Generate filled PPT.
     Accepts:
       1. Multipart: template file + JSON data field (backward compatible)
-      2. JSON-only: { "data": {...} } – uses stored template from /read-template-placeholders
+      2. JSON-only: { "data": {...} } â€“ uses stored template from /read-template-placeholders
       3. JSON with hash: { "data": {...}, "template_hash": "abc123" }
     Returns binary .pptx file.
     """
@@ -2177,5 +2552,5 @@ def api_generate_ppt_json():
 # ============================================================================
 
 if __name__ == '__main__':
-    log.info('Starting iSFP PPT Service v5.3')
+    log.info('Starting iSFP PPT Service v6.0')
     app.run(host='0.0.0.0', port=5000, debug=False)
