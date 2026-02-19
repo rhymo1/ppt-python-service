@@ -2037,9 +2037,12 @@ def resize_bar_shapes(slide, text_mapping: dict, stats: dict):
     # Calculate negative zone: shift all bars right if any negative values exist
     has_negative = min_neg_kwh < 0
     if has_negative:
-        # Reserve space on the left for negative bars
-        neg_zone_ratio = abs(min_neg_kwh) / (max_pos_kwh + abs(min_neg_kwh))
-        neg_zone_width = int(max_bar_width * neg_zone_ratio * 0.5)  # cap at 50%
+        # Allocate bar width proportionally between positive and negative zones.
+        # Negative zone gets space proportional to its share of the total range,
+        # capped at 30% so positive bars retain most of the visual space.
+        total_range = max_pos_kwh + abs(min_neg_kwh)
+        neg_zone_ratio = min(abs(min_neg_kwh) / total_range, 0.30)
+        neg_zone_width = int(max_bar_width * neg_zone_ratio)
         effective_bar_width = max_bar_width - neg_zone_width
     else:
         neg_zone_width = 0
@@ -2053,10 +2056,12 @@ def resize_bar_shapes(slide, text_mapping: dict, stats: dict):
         fill_color = COLOR_BAR_RED if bar['color_type'] == 'red' else COLOR_BAR_GREEN
 
         if kwh < 0:
-            # Negative bar: extends LEFT from origin line
+            # Negative bar: extends LEFT from origin line, scaled within neg_zone
             origin_x = original_left + neg_zone_width
-            bar_width = int(effective_bar_width * abs(kwh) / max_pos_kwh)
+            # Scale within the negative zone: largest negative fills entire zone
+            bar_width = int(neg_zone_width * abs(kwh) / abs(min_neg_kwh))
             bar_width = max(bar_width, int(max_bar_width * 0.02))
+            bar_width = min(bar_width, neg_zone_width)  # safety clamp
             shape.left = origin_x - bar_width
             shape.width = bar_width
         elif kwh > 0:
