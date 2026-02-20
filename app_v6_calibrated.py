@@ -1541,6 +1541,14 @@ def structure_complete_data(sqproj_data: dict, pdf1_data: dict, pdf2_data: dict,
             placeholder_map[f'{comp}_instandhaltung'] = f"{int(float(sow)):,} €".replace(',', '.') if sow else ''
             placeholder_map[f'{comp}_foerderung'] = f"{int(float(fund)):,} €".replace(',', '.') if fund else ''
 
+    # Merge PDF images into placeholder_map so they travel through n8n correctly
+    # (Fix: pdf_images were stored separately and never picked up by Node 9)
+    if pdf_images:
+        for img_key, img_b64 in pdf_images.items():
+            if img_key not in placeholder_map or not placeholder_map[img_key]:
+                placeholder_map[img_key] = img_b64
+        log.info(f'  Merged {len(pdf_images)} PDF images into placeholder_map')
+
     # Ausformulierung context for AI
     ausformulierung_context = {}
     components_for_ai = {
