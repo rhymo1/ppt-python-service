@@ -46,6 +46,7 @@ import sqlite3
 import logging
 import tempfile
 import base64
+import threading
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -92,8 +93,63 @@ CACHE_DIR.mkdir(exist_ok=True)
 TEMPLATE_DIR = Path(tempfile.gettempdir()) / 'isfp_templates'
 TEMPLATE_DIR.mkdir(exist_ok=True)
 
-TEMPLATE_DIR = Path(tempfile.gettempdir()) / 'isfp_templates'
-TEMPLATE_DIR.mkdir(exist_ok=True)
+# ============================================================================
+# CACHE / TEMP FILE CLEANUP (TTL-based)
+# ============================================================================
+
+CACHE_TTL_HOURS = 24         # Delete cache files older than 24h
+TEMPLATE_TTL_HOURS = 72      # Templates live longer (may be reused across sessions)
+CLEANUP_INTERVAL_SECS = 3600 # Run cleanup every hour
+
+
+def cleanup_old_files():
+    """Delete files older than their TTL from cache and template directories."""
+    now = time.time()
+    removed_count = 0
+    freed_bytes = 0
+
+    for directory, ttl_hours, pattern in [
+        (CACHE_DIR, CACHE_TTL_HOURS, '*.json'),
+        (TEMPLATE_DIR, TEMPLATE_TTL_HOURS, '*.pptx'),
+    ]:
+        if not directory.exists():
+            continue
+        cutoff = now - (ttl_hours * 3600)
+        for filepath in directory.glob(pattern):
+            try:
+                # Skip .tmp files (in-progress atomic writes)
+                if filepath.suffix == '.tmp':
+                    # Remove stale .tmp files older than 1 hour (failed writes)
+                    if filepath.stat().st_mtime < now - 3600:
+                        size = filepath.stat().st_size
+                        filepath.unlink()
+                        freed_bytes += size
+                        removed_count += 1
+                    continue
+                if filepath.stat().st_mtime < cutoff:
+                    size = filepath.stat().st_size
+                    filepath.unlink()
+                    freed_bytes += size
+                    removed_count += 1
+            except OSError:
+                pass  # File already deleted or permission issue
+
+    if removed_count > 0:
+        log.info(
+            f'🧹 Cleanup: removed {removed_count} expired files, '
+            f'freed {freed_bytes / 1024 / 1024:.1f} MB'
+        )
+    return removed_count, freed_bytes
+
+
+def _cleanup_loop():
+    """Background thread that runs cleanup periodically."""
+    while True:
+        time.sleep(CLEANUP_INTERVAL_SECS)
+        try:
+            cleanup_old_files()
+        except Exception as e:
+            log.error(f'Cleanup error: {e}')
 
 # ============================================================================
 # STRUCTURED LOGGING
@@ -105,6 +161,12 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 log = logging.getLogger('isfp')
+
+# --- Start cleanup: run once now, then hourly in background ---
+cleanup_old_files()
+_cleanup_thread = threading.Thread(target=_cleanup_loop, daemon=True)
+_cleanup_thread.start()
+log.info(f'🧹 Cache cleanup active: cache TTL={CACHE_TTL_HOURS}h, template TTL={TEMPLATE_TTL_HOURS}h, interval={CLEANUP_INTERVAL_SECS}s')
 
 
 class ExtractionLog:
@@ -174,12 +236,31 @@ def home():
 
 @app.route('/health')
 def health():
+    # Count files and total size in cache/template dirs
+    def dir_stats(directory, pattern):
+        files = list(directory.glob(pattern)) if directory.exists() else []
+        total_bytes = sum(f.stat().st_size for f in files if f.exists())
+        return len(files), total_bytes
+
+    cache_count, cache_bytes = dir_stats(CACHE_DIR, '*.json')
+    template_count, template_bytes = dir_stats(TEMPLATE_DIR, '*.pptx')
+
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '6.2',
+        'version': '6.3',
         'ocr_available': OCR_AVAILABLE,
         'fitz_available': FITZ_AVAILABLE,
+        'cache': {
+            'files': cache_count,
+            'size_mb': round(cache_bytes / 1024 / 1024, 1),
+            'ttl_hours': CACHE_TTL_HOURS,
+        },
+        'templates': {
+            'files': template_count,
+            'size_mb': round(template_bytes / 1024 / 1024, 1),
+            'ttl_hours': TEMPLATE_TTL_HOURS,
+        },
     })
 
 
