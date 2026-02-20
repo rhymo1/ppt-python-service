@@ -168,6 +168,68 @@ _cleanup_thread = threading.Thread(target=_cleanup_loop, daemon=True)
 _cleanup_thread.start()
 log.info(f'🧹 Cache cleanup active: cache TTL={CACHE_TTL_HOURS}h, template TTL={TEMPLATE_TTL_HOURS}h, interval={CLEANUP_INTERVAL_SECS}s')
 
+# ============================================================================
+# RATE LIMITING (in-memory, per-IP)
+# ============================================================================
+
+RATE_LIMIT_MAX = 120          # Max requests per window per IP (~30 full generations)
+RATE_LIMIT_WINDOW_SECS = 3600 # 1 hour window
+_rate_store = {}              # { ip: [timestamp, timestamp, ...] }
+_rate_lock = threading.Lock()
+
+
+def _check_rate_limit(ip):
+    """
+    Returns (allowed: bool, retry_after: int).
+    Cleans up expired entries automatically.
+    """
+    now = time.time()
+    cutoff = now - RATE_LIMIT_WINDOW_SECS
+
+    with _rate_lock:
+        # Get or create entry, prune expired timestamps
+        timestamps = [t for t in _rate_store.get(ip, []) if t > cutoff]
+
+        if len(timestamps) >= RATE_LIMIT_MAX:
+            # Oldest timestamp still in window — retry after it expires
+            retry_after = int(timestamps[0] - cutoff) + 1
+            _rate_store[ip] = timestamps
+            return False, retry_after
+
+        timestamps.append(now)
+        _rate_store[ip] = timestamps
+
+        # Periodic cleanup: remove IPs with no recent activity (every ~100 calls)
+        if len(_rate_store) > 100:
+            _rate_store.update({
+                k: [t for t in v if t > cutoff]
+                for k, v in _rate_store.items()
+            })
+            for k in [k for k, v in _rate_store.items() if not v]:
+                del _rate_store[k]
+
+        return True, 0
+
+
+def rate_limit_check():
+    """Call at the top of rate-limited endpoints. Returns error response or None."""
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if ip and ',' in ip:
+        ip = ip.split(',')[0].strip()  # First IP in proxy chain
+
+    allowed, retry_after = _check_rate_limit(ip)
+    if not allowed:
+        log.warning(f'🚫 Rate limit exceeded for {ip} ({RATE_LIMIT_MAX}/{RATE_LIMIT_WINDOW_SECS}s)')
+        return jsonify({
+            'error': f'Rate limit exceeded. Max {RATE_LIMIT_MAX} requests per hour.',
+            'retry_after_seconds': retry_after,
+        }), 429
+
+    return None
+
+
+log.info(f'🚦 Rate limiting active: {RATE_LIMIT_MAX} requests per {RATE_LIMIT_WINDOW_SECS}s per IP')
+
 
 class ExtractionLog:
     """Track per-field extraction success/failure for debugging."""
@@ -260,6 +322,10 @@ def health():
             'files': template_count,
             'size_mb': round(template_bytes / 1024 / 1024, 1),
             'ttl_hours': TEMPLATE_TTL_HOURS,
+        },
+        'rate_limit': {
+            'max_per_hour': RATE_LIMIT_MAX,
+            'tracked_ips': len(_rate_store),
         },
     })
 
@@ -2345,6 +2411,11 @@ def api_extract_comprehensive():
     start = time.time()
     log.info('=== /extract-comprehensive START ===')
 
+    # Rate limit check
+    limit_response = rate_limit_check()
+    if limit_response:
+        return limit_response
+
     try:
         # ══€══€ Phase 1: Collect files from ANY field name ══€══€
         all_files = []
@@ -2516,6 +2587,11 @@ def api_extract_comprehensive():
 @app.route('/read-template-placeholders', methods=['POST'])
 def api_read_template():
     """Read all {{placeholders}} from .pptx template. Also stores template for /generate."""
+    # Rate limit check
+    limit_response = rate_limit_check()
+    if limit_response:
+        return limit_response
+
     try:
         template_file = None
         for key in request.files:
@@ -2575,6 +2651,11 @@ def api_read_template():
 @app.route('/generate-charts', methods=['POST'])
 def api_generate_charts():
     """Generate all chart images. Accepts extracted data JSON."""
+    # Rate limit check
+    limit_response = rate_limit_check()
+    if limit_response:
+        return limit_response
+
     try:
         data = request.get_json()
         if not data:
@@ -2603,6 +2684,11 @@ def api_generate_ppt():
       3. JSON with hash: { "data": {...}, "template_hash": "abc123" }
     Returns binary .pptx file.
     """
+    # Rate limit check
+    limit_response = rate_limit_check()
+    if limit_response:
+        return limit_response
+
     try:
         template_bytes = None
         approved_data = None
@@ -2692,6 +2778,11 @@ def api_generate_ppt():
 @app.route('/generate-json', methods=['POST'])
 def api_generate_ppt_json():
     """Same as /generate but returns base64-encoded file in JSON (backward compat)."""
+    # Rate limit check
+    limit_response = rate_limit_check()
+    if limit_response:
+        return limit_response
+
     try:
         body = request.get_json() or {}
         template_b64 = body.get('template_file', '')
